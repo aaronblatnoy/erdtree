@@ -18,7 +18,7 @@ Not as a chatbot. Not as a GUI overlay. Not as a cloud service you ping for ever
 
 ## What Erdtree Is
 
-Erdtree is a suite of Linux distribution where natural language is the native interface to the operating system.
+Erdtree is a suite of Linux distros where natural language is the native interface to the operating system.
 
 You don't learn new syntax. You don't look up man pages. You don't paste commands from Stack Overflow. You type what you want, in plain English, and Linux does it.
 
