@@ -1,12 +1,12 @@
 # Erdtree
 
-## It started with a server
+## Linux CLI Commands are a Hassle
 
-A while back I was setting up a home server. Nothing exotic — just getting services running, configuring storage, opening the right ports. But I kept hitting the same wall: I knew *what* I wanted to do, I just didn't know the exact command. So I'd tab over to ChatGPT, describe what I needed, paste the command back into the terminal, and run it.
+I recently set up my first server on Linux Arch. Nothing crazy — just getting services running, configuring storage, opening the right ports. But I kept hitting the same wall: I knew *what* I wanted to do, I just didn't know the  command. So I'd tab over to Claude, describe what I needed, paste the command back into the terminal, and run it. This was a hassle.
 
 After a few hours of this I realized I was essentially using AI as a translation layer between English and Linux. The AI understood me perfectly. The computer just needed a middleman.
 
-Eventually I went further — I set up Claude Code on the server so I could talk to it directly from my machine. Type what I wanted in plain English, and it would figure out the commands and run them. It worked remarkably well. But it also felt like a workaround. I was bolting a natural language interface onto an OS that was never designed for it.
+Eventually I went further — I set up Claude Code on the server so I could talk to it directly from my machine. Type what I wanted in plain English, and it would figure out the commands and run them. This works remarkably well. But it also felt like a workaround. I was bolting a natural language interface onto an OS that was never designed for it.
 
 That's when the question hit me:
 
@@ -18,20 +18,20 @@ Not as a chatbot. Not as a GUI overlay. Not as a cloud service you ping for ever
 
 ## What Erdtree Is
 
-Erdtree is a Linux distribution where natural language is the native interface to the operating system.
+Erdtree is a suite of Linux distribution where natural language is the native interface to the operating system.
 
 You don't learn new syntax. You don't look up man pages. You don't paste commands from Stack Overflow. You type what you want, in plain English, and Linux does it.
 
 ```
-$ radagon show me all failing services
-$ radagon why is nginx not starting
-$ radagon install postgresql and configure it for production
-$ radagon what opened port 3306 and when
+$ show me all failing services
+$ why is nginx not starting
+$ install postgresql and configure it for production
+$ what opened port 3306 and when
 ```
 
 The intelligence runs locally via [Ollama](https://ollama.com) — no cloud dependency, no API keys, no data leaving your machine. The AI is completely invisible in user-facing output. There's no chatbot UI, no "as an AI language model" hedging, no mention of LLMs anywhere. Just Linux that understands what you mean.
 
-Erdtree ships as an ISO installer built on Rocky Linux 9 — RHEL-compatible, enterprise-grade, SELinux-enabled. It's a real operating system, not a demo.
+Erdtree distros ship as an ISO installer built on Rocky Linux 9 — RHEL-compatible, enterprise-grade, SELinux-enabled. It's a real operating system, not a demo.
 
 ---
 
@@ -42,8 +42,6 @@ Erdtree ships as an ISO installer built on Rocky Linux 9 — RHEL-compatible, en
 | 1 | **Linux Marika** | ~3B quantized | Hobbyists, homelabbers |
 | 2 | **Linux Radagon** | 7B–14B specialized | Professional sysadmins, data centers |
 | 3 | **Linux Radahn** | Massive, dedicated infra | Hyperscale enterprise |
-
-**Radagon is the core business.** A sysadmin managing dozens of servers who can query the system in English, get instant answers, and execute operations safely — that's the product. Every architectural decision optimizes for that use case.
 
 ---
 
