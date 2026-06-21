@@ -42,13 +42,13 @@ Erdtree distros ship as an ISO installer built on Rocky Linux 9 — RHEL-compati
 | 1 | **Linux Marika** | ~3B quantized | Hobbyists, homelabbers |
 | 2 | **Linux Radagon** | 7B–14B specialized | Professional sysadmins, data centers |
 
-*I plan on releasing more robust enterprise grade models in the future!*
+*I plan on releasing more robust, enterprise-grade models in the future!*
 
 ---
 
 ## The Architecture
 
-Erdtree's own agent framework lives in `core/`. It's not a wrapper around Claude Code or any other harness — it's built from the ground up to be Ollama-native, invisible-AI, and harness-portable. The framework is what matters: the system-context layer, the permission model, the audit spine, the seamless dispatch between English and shell.
+The agentic framework lives in `core/`. It's not a wrapper around Claude Code or any other harness — it's built from the ground up to be Ollama-native, invisible-AI, and harness-portable. The framework is what matters: the system-context layer, the permission model, the audit spine, the seamless dispatch between English and shell.
 
 **System Context Layer** — On startup and continuously, the agent builds and maintains a live model of the running system: kernel version, installed packages, running services, hardware topology, recent logs, open ports, firewall rules, disk health. This context is injected automatically into every query. The user never has to explain their environment.
 
