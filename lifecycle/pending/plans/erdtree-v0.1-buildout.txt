@@ -1,0 +1,1039 @@
+=====================================================================
+BUILDOUT PHASE PLAN: Erdtree v0.1 (Marika + Radagon, Radagon-first)
+Generated: 2026-06-21
+Scope: Ship a Linux distro where natural-language IS the native terminal
+       interface — local Ollama inference, invisible AI, agentic loop with
+       a hard permission seam — as branded ISOs for the Marika (3B) and
+       Radagon (7B-14B) tiers, Radagon prioritized.
+Source context: /Users/aaron_7nh0yzm/erdtree/CLAUDE.md + the two
+       authoritative briefs + the binding design-conversation decisions
+       supplied with this request (decisions 1-8 override the briefs).
+=====================================================================
+
+## 0. CONTEXT & GOALS
+
+Problem statement
+  Sysadmins and homelabbers interact with Linux through a command line that
+  demands memorized syntax, man-page archaeology, and zero forgiveness. Erdtree
+  replaces that surface with English while keeping the system fully open
+  underneath: "Type in English. Linux does it." The intelligence is local-only
+  (Ollama), invisible (never surfaced as AI/LLM/agent/model), and gated by a
+  deliberate permission seam because the domain is irreversible (a live box has
+  no git-undo). This is "Claude Code on hard mode": same UX target, a weaker
+  local engine, an unforgiving domain, an eternal login-shell session, and a
+  hidden-AI reliability bar where users blame "the shell," not "the AI."
+
+Success criteria (measurable)
+  SC1  End-to-end agent loop works on a base model (Qwen2.5 7B/14B-Instruct)
+       under Ollama: English in -> tool call -> permission gate -> subprocess
+       execute -> audited -> English out. No external network calls at runtime
+       (verified by egress monitor).
+  SC2  Tool-call validity rate >= 99.5% on the reliability benchmark for the
+       Radagon base model; documented (pass/fail) for the Marika 3B base.
+  SC3  The product shell is the login shell AND a dead-man's bash fallback
+       fires automatically + loudly when the agent/Ollama is unavailable
+       (verified by killing Ollama and confirming the user still has a shell).
+  SC4  Already-valid Linux commands (df -h, cd, systemctl status, grep ...)
+       run transparently and are NEVER mistranslated; English intent is
+       translated. Measured by a command-vs-English dispatch test corpus
+       (target: 0 mis-dispatches on the corpus).
+  SC5  Read ops execute with no confirm; write ops confirm; destructive ops
+       require the literal word typed in full and are never auto-confirmed,
+       never run non-interactively. Every op lands in append-only JSONL audit.
+  SC6  Two bootable, branded ISOs (Marika, Radagon) install on target hardware
+       and first-boot into the product shell with the model present (or
+       gracefully pulling, with bash fallback live during the pull).
+  SC7  ERDTREE_TIER selects tier at runtime; core/ contains zero hardcoded
+       "marika"/"radagon" strings (verified by grep). Rocky branding never
+       appears in any user-facing string (verified by grep).
+
+Non-goals (explicitly OUT of scope for v0.1 — DEFERRED)
+  - Radahn (~70B) and Starscourge tiers. Do not build.
+  - Fleet / multi-node operational RAG corpus (a distributed-systems problem;
+    Radahn-era). v0.1 RAG is single-machine + shared docs only.
+  - Any GUI. Terminal only, always.
+  - Shipping the FINE-TUNED model in the initial agent. v0.1 ships on a base
+    model + strong system prompt. The fine-tuned Radagon model is a PARALLEL
+    workstream that lands in v1.0 and does NOT block v0.1.
+  - Any external/cloud runtime dependency of any kind.
+
+Assumptions made
+  A1  Target dev/build host is the "mossad" server (Threadripper-class CPU +
+      multiple RTX 3060 Ti 8GB GPUs per CLAUDE.md / design notes) for training
+      and ISO builds. Per-card 8GB is a hard constraint: a 14B 4-bit (~9GB)
+      does NOT fit on one card — Radagon inference must split across cards or
+      drop quant. Captured in Phase 6/8 risks.
+  A2  The "Claude Code-style harness" is an available open-source agent harness
+      that speaks an OpenAI-compatible endpoint; Ollama exposes one. Its exact
+      identity/license is unresolved and is an EARLY GATING item (Phase 0).
+  A3  Base model for v0.1 is Qwen2.5-Instruct (7B/14B for Radagon, 3B for
+      Marika), pinned by quantization tag in tier config (never :latest).
+  A4  Python is the agent-layer language; tools shell out via subprocess.
+  A5  Rocky Linux 9 is the build base; SELinux enabled; dnf/RPM packaging.
+  A6  No git repo exists at the erdtree root yet (verified). Executor should
+      `git init` before fan-out so worktree-isolation phases work.
+  A7  The harness can be pointed at Ollama without code changes beyond config
+      (base URL + model name). If it cannot, Phase 3 absorbs an adapter shim.
+
+If any of A1-A7 is wrong in a way that reshapes the plan, that surfaces in the
+Phase-0 gating spike and the plan is revised before further fan-out.
+
+---------------------------------------------------------------------
+## 1. ARCHITECTURE OVERVIEW
+
+How this fits / data flow (the agent loop, target behavior):
+
+  product shell (login shell)                         os/ integration
+        |  user types English OR a raw command        (journald interceptor,
+        v                                              dmesg watcher, pam hook,
+  shell.py dispatch ----+---- already-valid cmd? ---> passthrough.py (bash)
+        |               |                                    |
+   English intent       +---- `!` raw escape --------------> bash
+        v
+  context/collector.py  -> snapshot.py (live system state) -> cache.py
+        v
+  core/agent/prompt.py  (system prompt + tier prompt + fresh context + history)
+        v
+  core/model/ollama.py  (stream from LOCAL Ollama, OpenAI-compatible)
+        v
+  core/agent/router.py  (parse tool calls from stream)
+        v
+  core/agent/permissions.py  (read=instant | write=confirm | destructive=typed)
+        v
+  core/tools/*  (subprocess: systemctl, dnf, journalctl, ...)
+        v
+  core/agent/audit.py  (append-only JSONL -> /var/log/{tier}/audit.jsonl)
+        v
+  model interprets tool output, responds in English -> loop
+        ^
+        +--- core/context/  re-derives state on demand (live box = source of truth)
+        +--- RAG-as-a-TOOL (agent calls retrieval only when it decides it needs it)
+
+Affected services / layers (all NEW; repo is a fresh scaffold):
+  - core/agent/    agent harness glue: repl, router, context, permissions, audit, prompt
+  - core/tools/    sysadmin toolset (subprocess wrappers)
+  - core/model/    Ollama streaming client
+  - core/context/  live system snapshot collector + cache
+  - shell/         the login shell + bash passthrough + dead-man fallback + hooks
+  - os/            systemd units, journald interceptor, dmesg watcher, pam hook
+  - rag/           shared docs corpus build + retrieval tool (single-machine scope)
+  - tiers/marika/, tiers/radagon/  config.yaml + prompt.txt + welcome + tools.yaml + firstboot
+  - training/      synthetic gen, clean, format, finetune (Unsloth), eval  [PARALLEL]
+  - build/, installer/, distro/rpm/  ISO + RPM packaging  [LAST]
+  - bench/         tool-call reliability benchmark  [EARLY gating]
+  - tests/, .github/workflows/, docs/
+
+Invariants this plan must preserve (thread through EVERY phase — see §0 SCs):
+  I1  No external API calls at runtime. Local Ollama only. (egress test gates)
+  I2  AI is invisible: no "AI/LLM/model/agent/agentic" in user-facing strings.
+  I3  Permission check before every write/destructive op; destructive never
+      auto-confirmed, never non-interactive.
+  I4  Audit-log every operation as append-only JSONL.
+  I5  System context always injected — agent never asks the user to explain env.
+  I6  One codebase; tier differences live ONLY in tiers/ (config + prompts).
+      core/ never hardcodes a tier/product name. ERDTREE_TIER selects at runtime.
+  I7  Rocky branding never user-visible.
+  I8  Performance is a feature — simple ops feel instant (read-path latency budget).
+  I9  DEAD-MAN'S FALLBACK: if the agent can't start (crash / Ollama down / model
+      mid-pull), fall through to bash automatically and loudly. A headless box
+      must never be left shell-less.
+
+---------------------------------------------------------------------
+## 2. AFFECTED SURFACE AREA
+
+Files to CREATE (by phase; full paths under /Users/aaron_7nh0yzm/erdtree/):
+  Phase 0  docs/decisions/0001-harness-selection.md
+           docs/decisions/0002-tool-call-protocol.md
+           bench/README.md, bench/cases/ (seed)
+  Phase 1  core/context/collector.py, core/context/snapshot.py,
+           core/context/cache.py, core/agent/audit.py,
+           core/agent/permissions.py, tests/test_permissions.py,
+           tests/test_audit.py, tests/test_snapshot.py
+  Phase 2  core/tools/__init__.py (registry), core/tools/services.py,
+           core/tools/packages.py, core/tools/logs.py, tests/test_tools_*.py
+  Phase 3  core/model/ollama.py, core/agent/prompt.py,
+           tests/test_ollama_roundtrip.py
+  Phase 4  core/agent/router.py, core/agent/repl.py, core/agent/main.py,
+           core/agent/context.py, bench/run_bench.py, bench/cases/*.json,
+           tests/test_router.py, tests/test_loop_e2e.py
+  Phase 5  shell/shell.py, shell/passthrough.py, shell/hooks/,
+           os/systemd/, os/journald/, os/dmesg/, os/pam/,
+           tests/test_dispatch.py, tests/test_deadman.py
+  Phase 6  core/tools/network.py, firewall.py, users.py, disk.py,
+           processes.py, hardware.py, files.py, tests/test_tools_phase6.py
+  Phase 7  rag/build_corpus.py, rag/embed.py, rag/index.py,
+           rag/retrieve.py (the TOOL), core/tools/docs.py (tool wrapper),
+           tests/test_rag_retrieve.py
+  Phase 8  core/agent/memory.py (compaction/cycling), core/context/facts.py
+           (per-host facts preamble), tests/test_compaction.py
+  Phase 9  tiers/marika/{config.yaml,prompt.txt,shell/welcome.txt,
+           tools/tools.yaml,firstboot/setup.py},
+           tiers/radagon/{...same...}, core/agent/tier.py (loader),
+           tests/test_tier_loader.py
+  Phase 10 training/generate/, training/clean.py, training/format.py,
+           training/finetune.py, training/eval.py, training/README.md
+           [PARALLEL workstream — does not block v0.1 ship]
+  Phase 11 build/common.sh, build/build-marika.sh, build/build-radagon.sh,
+           installer/branding/, installer/screens/, installer/kickstart/,
+           distro/rpm/erdtree-agent.spec, .github/workflows/build.yml,
+           docs/install.md
+
+Files to MODIFY:
+  - CLAUDE.md "Common Commands" + "Conventions & Gotchas" — append VERIFIED
+    commands/gotchas as phases land (do not guess; only verified entries).
+
+Migrations: none (no DB). "State" = live box + audit JSONL + per-host facts file.
+
+New env vars / config:
+  ERDTREE_TIER (marika|radagon) — selects tier; read by core/agent/tier.py.
+  Config path: /etc/{tier}/config.yaml. Audit path: /var/log/{tier}/audit.jsonl.
+  OLLAMA base URL + model tag live in tier config.yaml (pinned tag, never :latest).
+
+New dependencies (pin versions in a requirements file per workstream):
+  - ollama python client OR raw httpx to the OpenAI-compatible endpoint.
+  - the selected harness (Phase-0 gated; license-cleared).
+  - RAG: a local embedding model + a local vector index (e.g. sqlite-vec / faiss
+    — single-machine, no network). Chosen in Phase 7.
+  - training (separate env): Unsloth, transformers, peft, trl, datasets.
+
+---------------------------------------------------------------------
+## 3. PHASES
+
+Phase ordering rationale: safety + system-awareness first (collector,
+permissions, audit), then the three highest-leverage tools, then wire the model
+and close the loop on a BASE model, then the shell/OS integration incl. the
+dead-man fallback, then RAG-as-tool, then memory UX, then tier plumbing.
+Training is a parallel workstream. Installer/RPM is LAST. The harness
+license/telemetry audit, the tool-call reliability benchmark, and the 3B
+agentic-reliability spike are EARLY GATING items in Phase 0 / Phase 4.
+
+=====================================================================
+### PHASE 0: Gating Spikes — Harness, Telemetry Strip, License, Protocol
+            Goal: de-risk the three load-bearing unknowns BEFORE building on them.
+=====================================================================
+Prerequisites: none. THIS PHASE GATES EVERYTHING.
+
+Deliverables:
+  - docs/decisions/0001-harness-selection.md: which harness, why, and the
+    LICENSE verdict for commercial distro shipping (GO / NO-GO / conditions).
+    NON-NEGOTIABLE: a full audit of the harness for telemetry / phone-home /
+    update-checks / crash reporters / analytics, with an itemized list of every
+    egress point found and the exact strip/disable applied. Confirmed by a
+    network-egress test (run the harness offline; assert zero outbound).
+  - docs/decisions/0002-tool-call-protocol.md: the EXACT tool-call I/O format
+    the harness expects (function-call schema, delimiters, streaming shape).
+    This is the contract that router.py parses AND that training data must match
+    (design decision #2). Freeze it here.
+  - bench/README.md + a seed set of bench/cases/: defines how tool-call validity
+    rate is measured (target 99.5%+). Scaffolding only; full runner is Phase 4.
+Steps:
+  1. Identify the harness; clone; run fully offline behind an egress monitor
+     (e.g. block all outbound, run, diff). Enumerate EVERY network call.
+  2. Strip/disable each: telemetry, update checks, crash/analytics reporters,
+     remote config. Re-run offline; assert zero egress. Record in 0001.
+  3. Read the harness LICENSE; determine compatibility with shipping inside a
+     commercial branded distro (redistribution, attribution, copyleft reach).
+     Write the verdict. If NO-GO, STOP and escalate (this reshapes the plan).
+  4. Extract the harness's expected tool-call format into 0002. Decide the
+     OpenAI-compatible endpoint shape Ollama must present.
+  5. Seed bench/ with the validity-rate definition and ~10 example cases.
+Validation:
+  - Offline egress test passes (zero outbound from the harness). [gates I1]
+  - 0001 carries an explicit GO/NO-GO license verdict.
+  - 0002 specifies a parseable, frozen tool-call contract.
+Risks / Edge cases:
+  - License is NO-GO -> escalate; may force a different harness or a hand-rolled
+    loop (large scope change). Mitigation: do this FIRST, before any dependency.
+  - Telemetry is deeply baked / hard to fully excise -> may need a fork. Treat
+    incomplete strip as a hard blocker on I1, not a warning.
+Subagent orchestration:
+  - Execution shape: [SINGLE] — one tightly-scoped spike, results gate the rest.
+  - REQUIRED subagent_type: general-purpose
+  - REQUIRED model: opus (architectural decision + license reasoning + the
+    egress audit cascades into every later phase; a missed phone-home breaks I1).
+  - Run in background: no (its verdict gates dispatch of all later phases).
+  - VERIFICATION: the egress-zero claim and the license verdict are
+    irreversible-if-wrong. After the spike, route BOTH claims to the audit-duo
+    SKILL (two genuinely independent agents) for adversarial confirmation before
+    GO. Do NOT use the consensus-verification-duo agentType nested here.
+  - Brief template:
+      "Execute Phase 0 of /Users/aaron_7nh0yzm/erdtree/lifecycle/pending/plans/
+       erdtree-v0.1-buildout.txt. Identify the Claude Code-style harness,
+       run it fully offline behind an egress monitor, enumerate + strip ALL
+       telemetry/update/analytics egress, and assert zero outbound. Settle the
+       LICENSE for commercial distro shipping (GO/NO-GO). Extract the exact
+       tool-call I/O format. Produce docs/decisions/0001 + 0002 + bench seed.
+       Touch only docs/decisions/, bench/. Validation: offline egress = zero,
+       license verdict explicit, tool-call contract frozen. Print one-line
+       summary + the GO/NO-GO and exit."
+
+=====================================================================
+### PHASE 1: Safety & System-Awareness Core
+            Goal: the agent can SEE the system and CANNOT act unsafely.
+=====================================================================
+Prerequisites: Phase 0 GO.
+Deliverables:
+  - core/context/collector.py — gathers live state: distro/kernel, installed
+    packages, running services, hardware topology, recent logs, open ports,
+    firewall rules, disk health, recent agent changes.
+  - core/context/snapshot.py — typed snapshot object the prompt layer consumes.
+  - core/context/cache.py — short-TTL cache so repeated reads feel instant (I8),
+    but the live box stays source of truth (design decision #5: re-derive on
+    demand over stale cache; cache is a latency optimization only).
+  - core/agent/permissions.py — classifies an op as read / write / destructive;
+    enforces: read=instant, write=confirm, destructive=literal-word-typed-in-full,
+    never auto-confirm, never non-interactive. Returns a decision + reason.
+  - core/agent/audit.py — append-only JSONL writer: timestamp, NL input,
+    translated command, output, result, permission decision. fsync-on-write.
+Steps:
+  1. Implement collector reading from /proc, /sys, systemctl, rpm -qa, ss, etc.
+     No tier names anywhere (I6). Tolerate missing subsystems gracefully.
+  2. Define snapshot schema; make it cheap to serialize into the prompt.
+  3. Implement permission classifier with an explicit destructive taxonomy
+     (rm -rf, mkfs, dd, partition ops, user/SSH/firewall lockout risks, reboot
+     on remote, etc.). Default-deny on ambiguity; classify unknown writes as
+     write-confirm, unknown destructive-shaped as destructive.
+  4. Implement audit writer; append-only, atomic, survives crash mid-write.
+Validation:
+  - test_snapshot: collector returns a populated snapshot on this box.
+  - test_permissions: read ops pass instantly; a curated destructive corpus is
+    ALWAYS gated and NEVER auto-confirmable; non-interactive destructive is
+    refused. [gates I3]
+  - test_audit: every classified op produces exactly one JSONL line; file is
+    append-only and parseable; partial-write recovery verified. [gates I4]
+Risks / Edge cases:
+  - Misclassifying a destructive op as a write (under-gating) = catastrophic on
+    a live box. Mitigation: err toward MORE gating; the destructive corpus is a
+    living test fixture; route the classifier to adversarial review (see below).
+  - Collector latency blows the instant-feel budget. Mitigation: lazy per-domain
+    collection + cache; only collect what a query needs.
+Subagent orchestration:
+  - Execution shape: [PARALLEL FANOUT OK — 3 siblings] context/, permissions.py,
+    audit.py are disjoint files. permissions.py is the keystone.
+  - REQUIRED subagent_type: general-purpose
+  - REQUIRED model: sonnet for context/ + audit.py; opus for permissions.py
+    (the safety classifier is correctness-critical; under-gating is irreversible).
+  - Run in background: yes (sibling builders), then join.
+  - VERIFICATION: route permissions.py + its destructive corpus to the
+    audit-duo SKILL — adversarial "find a destructive op that slips the gate."
+  - Brief template (per sibling):
+      "Execute Phase 1 of <PLAN_FILE>. Your slice: <core/context/* | permissions.py
+       | audit.py>. Read §3 Phase 1 + §1 invariants I3/I4/I5/I8. Touch only your
+       file(s) + its test. No tier names (I6). Validation: <named test> green.
+       Evidence: test output. Print one-line summary and exit."
+
+=====================================================================
+### PHASE 2: The Three High-Leverage Tools (services, packages, logs)
+            Goal: cover ~80% of real sysadmin tasks with three tools.
+=====================================================================
+Prerequisites: Phase 1 (uses permissions + audit + snapshot).
+Deliverables:
+  - core/tools/__init__.py — tool registry + a uniform tool interface (name,
+    args schema, read|write|destructive class, execute()->structured result).
+  - core/tools/services.py — systemctl (status/start/stop/restart/enable/logs).
+  - core/tools/packages.py — dnf (install/remove/update/search/info). Rocky/dnf,
+    NOT apt (gotcha in CLAUDE.md). SELinux-aware.
+  - core/tools/logs.py — journalctl + dmesg (query, filter, tail, since).
+Steps:
+  1. Define the tool interface so router.py (Phase 4) and tools.yaml (Phase 9)
+     bind uniformly. Each tool declares its permission class per-operation.
+  2. Implement the three tools as subprocess wrappers returning STRUCTURED
+     results (exit code, stdout, stderr, parsed summary) for the model to reason
+     over. Every execute() routes through permissions + audit.
+  3. Map operations to permission classes (restart=write-confirm; remove a
+     package=write or destructive depending on what it removes; mask a unit=write).
+Validation:
+  - test_tools_services/packages/logs: each op produces a structured result and
+    an audit line; write ops require confirm; read ops don't. Run read ops live
+    on this box; mock/dry-run write ops in CI.
+Risks / Edge cases:
+  - dnf removing a package that cascades (removes the kernel / SSH) — classify
+    as destructive when the transaction plan shows high blast radius; surface
+    the dnf transaction summary in the confirm.
+  - SELinux denials masquerading as tool failures. Mitigation: logs.py surfaces
+    audit2allow-style hints; note as a verified gotcha in CLAUDE.md when found.
+Subagent orchestration:
+  - Execution shape: [PARALLEL FANOUT OK — 3 siblings] after the registry lands.
+    Registry/interface (__init__.py) is a SEQUENTIAL prerequisite to the three.
+  - REQUIRED subagent_type: general-purpose
+  - REQUIRED model: sonnet (subprocess wrappers with light dispatch logic).
+  - Run in background: yes (siblings), join after.
+  - Brief template:
+      "Execute Phase 2 of <PLAN_FILE>. Your slice: core/tools/<services|packages|
+       logs>.py against the registry interface in core/tools/__init__.py. Route
+       every execute() through permissions + audit (Phase 1). Structured results.
+       dnf not apt; SELinux-aware. Touch only your tool + its test. Validation:
+       test_tools_<x> green. Print one-line summary and exit."
+
+=====================================================================
+### PHASE 3: Wire Ollama + Prompt Assembly (model round-trip, base Qwen)
+            Goal: a real local model streams a response to an assembled prompt.
+=====================================================================
+Prerequisites: Phase 0 (protocol 0002), Phase 1 (snapshot for context).
+Deliverables:
+  - core/model/ollama.py — streaming client to LOCAL Ollama via the
+    OpenAI-compatible endpoint; model + base URL from tier config; pinned tag.
+  - core/agent/prompt.py — assembles: house system prompt (no-hedge voice, NO AI
+    language per I2) + tier prompt + fresh injected context (I5) + input +
+    recent history, in the exact tool-call format from 0002.
+Steps:
+  1. Implement the streaming client; assert it only talks to localhost Ollama
+     (I1). Pin model tag from config, never :latest (gotcha).
+  2. Implement prompt assembly; keep it tier-agnostic in core/ — tier-specific
+     text comes from tiers/ (I6), stubbed for now until Phase 9.
+  3. Round-trip: assemble a prompt for "show failing services," stream a
+     response from base Qwen, confirm a tool call appears in the 0002 format.
+Validation:
+  - test_ollama_roundtrip: with Ollama up + base Qwen pulled, a prompt yields a
+    streamed response containing a well-formed tool call. Egress test: client
+    talks ONLY to localhost. [gates I1]
+Risks / Edge cases:
+  - Ollama's OpenAI-compat endpoint may not match the harness's expected format
+    exactly -> Phase 3 absorbs an adapter shim (A7). Mitigation: 0002 froze the
+    contract; shim translates if needed.
+  - Base model emits prose instead of a tool call -> this is the tool-call
+    reliability risk (decision #2), measured in Phase 4, mitigated by training
+    later. For now, system-prompt engineering to coax format.
+Subagent orchestration:
+  - Execution shape: [SINGLE] — ollama.py + prompt.py are tightly coupled by 0002.
+  - REQUIRED subagent_type: general-purpose
+  - REQUIRED model: sonnet (light reasoning; the hard format risk is measured,
+    not solved, here).
+  - Run in background: no (gates Phase 4 dispatch).
+  - Brief template:
+      "Execute Phase 3 of <PLAN_FILE>. Build core/model/ollama.py (streaming,
+       localhost-only, pinned tag) + core/agent/prompt.py (assemble per 0002,
+       NO AI language I2, inject context I5, tier text stubbed). Touch only those
+       + test_ollama_roundtrip. Validation: round-trip yields a well-formed tool
+       call; client egress = localhost only. Print one-line summary and exit."
+
+=====================================================================
+### PHASE 4: Close the Loop + Tool-Call Reliability Benchmark + 3B Spike
+            Goal: full end-to-end agentic loop on a base model, MEASURED.
+=====================================================================
+Prerequisites: Phases 1, 2, 3. THIS IS THE #1 TECHNICAL BET (decision #2).
+Deliverables:
+  - core/agent/router.py — parse tool calls from the stream (per 0002), dispatch
+    to the tool registry, feed structured results back to the model.
+  - core/agent/context.py — per-turn context plumbing into the loop.
+  - core/agent/repl.py — the read-eval-print loop (text in -> loop -> text out).
+  - core/agent/main.py — entrypoint wiring collector -> prompt -> ollama ->
+    router -> permissions -> tools -> audit -> back to model.
+  - bench/run_bench.py + bench/cases/*.json — the TOOL-CALL VALIDITY BENCHMARK
+    (target >= 99.5%): N agentic scenarios, measure % of turns emitting a valid,
+    well-formed, parseable tool call. Run against Radagon base (7B/14B) AND the
+    Marika 3B base.
+  - The 3B AGENTIC-RELIABILITY SPIKE: run the benchmark on the 3B and record
+    whether it can drive the loop. If 3B can't, the Marika story has a hole —
+    flag explicitly (decision #2).
+Steps:
+  1. Implement router parsing strictly against 0002; reject malformed calls and
+     surface a re-ask path (don't crash on a bad call — count it as a miss).
+  2. Wire main.py for a full single-task loop end to end on base Qwen 7B/14B.
+  3. Build the benchmark harness + a representative case set across the common
+     tool domains (services/packages/logs first).
+  4. Run on 14B, 7B, 3B; record validity rates. Gate Radagon at >= 99.5%.
+Validation:
+  - test_loop_e2e: "restart nginx" drives the full loop, gated at the write
+    confirm, audited, and answered in English on a base model.
+  - bench: Radagon base hits >= 99.5% tool-call validity (SC2). 3B result
+    recorded with a GO/HOLE verdict for Marika.
+Risks / Edge cases:
+  - Base model validity < 99.5% on Radagon -> v0.1 still ships (decision: base
+    model is acceptable for v0.1), but flag the gap loudly; this is exactly what
+    the training workstream (Phase 10) exists to close for v1.0.
+  - 3B can't drive the loop -> Marika tier ships with a documented limitation
+    (fewer tools / tighter prompts) OR Marika waits for the fine-tune. Decision
+    surfaced to the user, not silently absorbed.
+Subagent orchestration:
+  - Execution shape: [SEQUENTIAL — depends on Phases 1-3], the integration spine.
+  - REQUIRED subagent_type: general-purpose
+  - REQUIRED model: opus (multi-file integration reasoning + the benchmark design
+    that decides whether the central technical bet holds; this is the gnarliest
+    cross-cutting wiring in v0.1).
+  - Run in background: no (its bench verdict gates tier + training decisions).
+  - VERIFICATION: route the benchmark METHODOLOGY (is 99.5% measured honestly?
+    are cases representative? is a malformed call correctly counted as a miss?)
+    to the audit-duo SKILL before trusting the number.
+  - Brief template:
+      "Execute Phase 4 of <PLAN_FILE>. Build router.py/context.py/repl.py/main.py
+       to close the loop on base Qwen, then bench/run_bench.py measuring tool-call
+       validity (target 99.5%) across 14B/7B/3B. Read §3 Phase 4 + 0002. Touch
+       only core/agent/{router,context,repl,main}.py + bench/. Validation:
+       test_loop_e2e green; Radagon >=99.5%; 3B verdict recorded. Print one-line
+       summary + the rates and exit."
+
+=====================================================================
+### PHASE 5: The Product Shell + OS Integration + Dead-Man's Fallback
+            Goal: the loop becomes the LOGIN SHELL, safely, with bash fallback.
+=====================================================================
+Prerequisites: Phase 4 (a working loop to wrap).
+Deliverables:
+  - shell/shell.py — the product shell (the login shell). CORE dispatch:
+    already-valid command -> execute transparently; English intent -> translate;
+    NEVER mistranslate (SC4, decision #6). No "AI mode" to enter.
+  - shell/passthrough.py — the `!` raw-bash escape (opt-in; default is product
+    shell).
+  - shell/hooks/ — shell lifecycle hooks.
+  - os/systemd/ — units to launch/manage the shell + Ollama dependency ordering.
+  - os/journald/ + os/dmesg/ — interceptor + watcher (feed context/proactive).
+  - os/pam/ — pam hook for login integration.
+  - DEAD-MAN'S FALLBACK (I9, decision #7, NON-NEGOTIABLE): if the agent can't
+    start (crash / Ollama down / model mid-pull on first boot), fall through to
+    bash automatically AND loudly print why. A headless box must never be
+    shell-less.
+Steps:
+  1. Implement the command-vs-English dispatch. Heuristic + validation: does the
+     input parse as a valid command / resolve on PATH / match known syntax? If
+     yes, run it raw. If clearly English intent, translate. Ambiguous -> prefer
+     safe behavior (don't silently run a guessed command). Build a test corpus.
+  2. Wire shell.py as login shell via /etc/passwd (config in installer Phase 11).
+  3. Implement the dead-man fallback at the OUTERMOST layer: shell.py's very
+     first action is a guarded agent-start; ANY failure -> exec bash with a loud
+     banner explaining the degraded state. Must survive Ollama-down and
+     model-mid-pull.
+  4. os/ integration: systemd ordering so the shell waits for Ollama but does
+     NOT hang the login if Ollama never comes up (fallback fires instead).
+Validation:
+  - test_dispatch: the command-vs-English corpus has 0 mis-dispatches (SC4) —
+    raw commands run raw, English translates, ambiguous never silently guesses.
+  - test_deadman: kill Ollama / simulate agent crash / simulate model mid-pull
+    -> user lands in bash with a loud banner, never shell-less (SC3, I9).
+Risks / Edge cases:
+  - A mistranslated raw command on a live box = the cardinal failure ("the shell
+    is broken," decision #8). Mitigation: dispatch errs toward executing raw or
+    asking, never toward guessing; this corpus is a permanent regression gate.
+  - Fallback that's quiet = a headless admin can't tell why English stopped
+    working. Mitigation: fallback MUST be loud and explain the degraded state.
+  - Login shell that hangs on Ollama startup = boot hang. Mitigation: timeout +
+    fallback, never an unbounded wait.
+Subagent orchestration:
+  - Execution shape: [SEQUENTIAL — depends on Phase 4]; dispatch + dead-man are
+    the keystones. shell/ and os/ are somewhat separable but the dead-man path
+    spans both, so keep them coordinated, not blindly parallel.
+  - REQUIRED subagent_type: general-purpose
+  - REQUIRED model: opus (the command-vs-English dispatch + dead-man fallback are
+    correctness-critical and the felt-UX core of "Claude Code on hard mode"; a
+    subtle dispatch error or a quiet fallback is the cardinal product sin).
+  - Run in background: no (gates the rest of the integrated build).
+  - VERIFICATION: route the dispatch corpus + the dead-man fallback to the
+    audit-duo SKILL — "find an input that mis-dispatches" / "find a failure mode
+    that leaves the user shell-less."
+  - Brief template:
+      "Execute Phase 5 of <PLAN_FILE>. Build shell/shell.py (login shell:
+       command-vs-English dispatch, NEVER mistranslate, no AI-mode), passthrough,
+       hooks, os/ integration, and the LOUD dead-man bash fallback (I9). Read §3
+       Phase 5 + decisions #6/#7/#8. Touch only shell/, os/, test_dispatch,
+       test_deadman. Validation: 0 mis-dispatches; killing Ollama lands user in
+       bash loudly. Print one-line summary and exit."
+
+=====================================================================
+### PHASE 6: Remaining Tools (network, firewall, users, disk, processes, hardware, files)
+            Goal: round out the toolset beyond the core three.
+=====================================================================
+Prerequisites: Phase 2 (tool interface), Phase 4 (loop to exercise them).
+Deliverables: core/tools/{network,firewall,users,disk,processes,hardware,files}.py
+Steps:
+  1. Each tool implements the Phase-2 interface; declares per-op permission class.
+  2. Heightened destructive classification where lockout/data-loss risk is real:
+     firewall (SSH lockout), users (lock the only admin), disk (mkfs/partition/dd
+     = data loss), network (drop the link you're on). These are the irreversible-
+     blast-radius ops decision #6 warns about — be MORE conservative than
+     Claude Code here.
+Validation:
+  - test_tools_phase6: read ops live; write/destructive ops gated + audited;
+    lockout-class ops require the literal destructive confirmation.
+Risks / Edge cases:
+  - Remote SSH lockout via firewall/network/users is the worst irreversible
+    outcome. Mitigation: these ops get the strictest gate + a warning that names
+    the lockout risk explicitly in the confirm.
+Subagent orchestration:
+  - Execution shape: [PARALLEL FANOUT OK — 7 siblings], disjoint files, shared
+    interface already frozen in Phase 2.
+  - REQUIRED subagent_type: general-purpose
+  - REQUIRED model: sonnet for most; opus for firewall.py + users.py + disk.py
+    (the three highest lockout/data-loss blast-radius tools).
+  - Run in background: yes (siblings), join after.
+  - Brief template:
+      "Execute Phase 6 of <PLAN_FILE>. Your slice: core/tools/<X>.py against the
+       Phase-2 interface. Declare per-op permission classes; lockout/data-loss ops
+       = destructive (be conservative, decision #6). Touch only your tool + test.
+       Validation: test_tools_phase6 slice green. Print one-line summary and exit."
+
+=====================================================================
+### PHASE 7: RAG as a TOOL (shared docs corpus, single-machine scope)
+            Goal: the agent can RETRIEVE Linux facts when it decides it needs to.
+=====================================================================
+Prerequisites: Phase 2 (tool interface), Phase 4 (loop). Knowledge axis only
+(decision #3): RAG for FACTS, never fine-tune for facts.
+Deliverables:
+  - rag/build_corpus.py — assemble ~100M-token corpus: man pages, Arch wiki,
+    Rocky/RHEL docs, quality-filtered SO, CVEs. -> ~250k-500k chunks.
+  - rag/embed.py — one-time local embedding (no network).
+  - rag/index.py — local vector index (~3-5GB SSD, ~1-2GB RAM; trivial cost).
+  - rag/retrieve.py + core/tools/docs.py — retrieval exposed as a TOOL the agent
+    CALLS when it decides it needs it (decision #4) — NOT prepended to every
+    query. Aggressive reranking; inject ~3 TIGHT chunks, not 10 mediocre ones.
+    Retrieval budget is a per-tier config knob (Marika tighter than Radagon).
+Steps:
+  1. Build + embed + index the corpus once (offline, local).
+  2. Implement retrieve() with a reranker; precision over recall.
+  3. Expose as core/tools/docs.py so router can dispatch it like any tool.
+  4. Wire a retrieval-budget config knob read from tier config (default off-path:
+     most ops, e.g. "restart nginx," retrieve nothing).
+Validation:
+  - test_rag_retrieve: a factual query ("what does the X flag in mount mean")
+    returns tight relevant chunks; a routine op ("restart nginx") triggers ZERO
+    retrieval. Index build is fully offline (I1).
+Risks / Edge cases:
+  - Over-retrieval burns prefill + KV-cache VRAM on the 8GB cards where a 14B
+    barely fits (decision #4). Mitigation: retrieval is opt-in-by-agent +
+    tight-budget + per-tier knob; precision-tuned.
+  - Corpus licensing for redistribution inside the distro (Arch wiki / SO
+    content). Mitigation: track per-source license in build_corpus.py; ship only
+    redistributable sources or ship the index-build recipe, not the raw corpus.
+Subagent orchestration:
+  - Execution shape: [PARALLEL FANOUT OK — 2 siblings]: (a) corpus build/embed/
+    index, (b) retrieve.py + docs.py tool. (b) depends on (a)'s index format
+    contract, so define that contract first, then fan out.
+  - REQUIRED subagent_type: general-purpose
+  - REQUIRED model: sonnet (retrieval engineering; not frontier-grade).
+  - Run in background: yes (corpus embedding is long wall-clock).
+  - Brief template:
+      "Execute Phase 7 of <PLAN_FILE>. Slice (a): rag/build_corpus+embed+index
+       (offline, local, per-source license tracked). Slice (b): rag/retrieve.py +
+       core/tools/docs.py — retrieval-as-a-TOOL, reranked, ~3 tight chunks,
+       per-tier budget knob. Touch only rag/, core/tools/docs.py, test_rag_retrieve.
+       Validation: factual query returns tight chunks; routine op = zero retrieval;
+       build offline. Print one-line summary and exit."
+
+=====================================================================
+### PHASE 8: Context Cycling / Compaction / Invisible Memory UX
+            Goal: an immortal session that NEVER shows a context limit.
+=====================================================================
+Prerequisites: Phase 4 (loop), Phase 1 (audit log = durable transcript),
+Phase 7 (RAG-over-own-history is the same retrieval machinery). Decision #5.
+Deliverables:
+  - core/agent/memory.py — task-scoped (not session-scoped) context; rolling
+    compaction that KEEPS tool-call OUTCOMES and DROPS verbose raw outputs once
+    reasoned over; keeps recent turns verbatim (deixis: "restart it" / "the one
+    we just did"); compaction threshold is a per-tier config knob.
+  - core/context/facts.py — a tiny curated per-host facts file injected as a
+    preamble (episodic anchor).
+  - Episodic memory: RAG-over-the-audit-log so the agent can silently retrieve
+    "what we did earlier" and answer as KNOWING — never as "out of context."
+Steps:
+  1. Implement task-boundary context cycling: cycle the window INVISIBLY at task
+     boundaries; re-inject minimal fresh state per task; don't retain stale state.
+  2. Implement rolling compaction (keep outcomes, drop raw; keep recent verbatim).
+  3. Implement per-host facts preamble + audit-log retrieval as episodic memory.
+  4. Design against the "amnesia moment": never say "out of context," never ask
+    the user to re-explain something established, never show a reset. Reaching
+    into memory surfaces as competent-colleague KNOWING.
+Validation:
+  - test_compaction: after exceeding the window across many tasks, the session
+    continues with no user-visible reset; a fact established 50 tasks ago is
+    recalled (via audit-log retrieval) and answered as if known; recent-turn
+    deixis ("restart it") still resolves.
+Risks / Edge cases:
+  - Compaction drops something still needed -> mitigated by audit-log retrieval
+    as the durable fallback (the box + the log are source of truth, not the
+    window — decision #5).
+  - An "amnesia moment" leaks to the user = the cardinal UX sin. Mitigation: the
+    test corpus explicitly probes for any user-visible reset/limit language.
+Subagent orchestration:
+  - Execution shape: [SEQUENTIAL — depends on Phases 4 + 7].
+  - REQUIRED subagent_type: general-purpose
+  - REQUIRED model: opus (the invisible-memory UX is subtle architecture where a
+    single leak — one "out of context" — breaks the core illusion; reasoning
+    about what to keep vs drop vs retrieve is non-trivial).
+  - Run in background: no.
+  - Brief template:
+      "Execute Phase 8 of <PLAN_FILE>. Build core/agent/memory.py (task-scoped
+       context, rolling compaction keep-outcomes-drop-raw, recent verbatim,
+       per-tier threshold) + core/context/facts.py + audit-log episodic retrieval.
+       Read §3 Phase 8 + decision #5. NEVER surface a context limit/reset (I2/UX).
+       Touch only those + test_compaction. Validation: immortal session, no
+       visible reset, old fact recalled silently, deixis resolves. Print one-line
+       summary and exit."
+
+=====================================================================
+### PHASE 9: Tier Plumbing (Marika + Radagon config/prompts) + ERDTREE_TIER
+            Goal: one codebase, tier differences ONLY in tiers/ (I6).
+=====================================================================
+Prerequisites: Phases 3-8 (everything tier-configurable must exist first).
+Deliverables:
+  - core/agent/tier.py — reads ERDTREE_TIER, loads /etc/{tier}/config.yaml,
+    resolves model tag, prompt, tools allowlist, retrieval budget, compaction
+    threshold. core/ stays name-free (I6).
+  - tiers/marika/{config.yaml,prompt.txt,shell/welcome.txt,tools/tools.yaml,
+    firstboot/setup.py} — 3B model tag, tighter retrieval/compaction, possibly a
+    reduced tool allowlist (informed by the Phase-4 3B verdict).
+  - tiers/radagon/{...same...} — 7B/14B tag, fuller budgets, full toolset.
+    PRIMARY tier — tune defaults here first.
+Steps:
+  1. Implement tier loader; grep core/ to PROVE zero hardcoded tier/product names
+     (SC7, I6). Move any leaked tier text into tiers/.
+  2. Author both tiers' config + prompts + welcome (no AI language anywhere, I2;
+     no Rocky branding, I7). Radagon defaults tuned first (PRIMARY).
+  3. firstboot/setup.py per tier: ensure the right model is pulled (with the
+     dead-man fallback live during the pull, Phase 5).
+Validation:
+  - test_tier_loader: ERDTREE_TIER=marika vs radagon loads distinct config; core/
+    grep shows zero tier/product/Rocky strings (SC7, I6, I7); both welcomes are
+    AI-language-free (I2).
+Risks / Edge cases:
+  - Tier logic leaking into core/ (the easiest invariant to violate). Mitigation:
+    the grep gate is a permanent CI check; route the cross-cutting move to a
+    rigorous refactor pass (see below).
+Subagent orchestration:
+  - Execution shape: [SEQUENTIAL — depends on 3-8]. tier.py first, then the two
+    tier dirs can be authored in [PARALLEL FANOUT OK — 2 siblings].
+  - REQUIRED subagent_type: refractor-pair for tier.py + the core/ de-hardcoding
+    (this is a cross-cutting "pull tier strings out of core/" refactor with a
+    grep-clean hard gate — exactly refractor-pair's impact-map-as-gate contract,
+    which must NOT be inline-personated). general-purpose for authoring each
+    tier's config/prompt content.
+  - REQUIRED model: opus for the refractor-pair de-hardcode (correctness of I6
+    across all of core/); sonnet for tier content authoring.
+  - Run in background: tier-content siblings yes; the refactor no (it gates the grep).
+  - Brief template (refactor):
+      "Execute Phase 9 of <PLAN_FILE>, tier.py + core/ de-hardcode slice. Build
+       core/agent/tier.py (ERDTREE_TIER -> /etc/{tier}/config.yaml). Then prove
+       core/ has ZERO hardcoded tier/product/Rocky strings (SC7/I6/I7) — move any
+       leak into tiers/. Validation: grep clean + test_tier_loader green. Print
+       one-line summary and exit."
+  - Brief template (content):
+      "Execute Phase 9 of <PLAN_FILE>, tiers/<marika|radagon>/ authoring. Write
+       config.yaml (pinned model tag, budgets), prompt.txt (no-hedge, NO AI
+       language I2, no Rocky I7), welcome.txt, tools.yaml, firstboot/setup.py.
+       Radagon is PRIMARY — tune first. Touch only your tier dir. Print one-line
+       summary and exit."
+
+=====================================================================
+### PHASE 10: Training Pipeline  [PARALLEL WORKSTREAM — does NOT block v0.1]
+            Goal: produce the fine-tuned Radagon model for v1.0 (not v0.1 ship).
+=====================================================================
+Prerequisites: Phase 0 (the 0002 tool-call FORMAT — training data must match it
+EXACTLY, decision #2) and Phase 4 (the benchmark — eval gate). Otherwise runs in
+PARALLEL with Phases 5-9. Decision #3: fine-tune for BEHAVIOR (tool-call
+reliability, Rocky-correct reflexes, no-hedge house voice), NOT for knowledge.
+Deliverables:
+  - training/generate/ — synthetic data via Claude Opus API (20 Linux domains x
+    10 question types, temperature-varied, 50k+ examples). CRITICAL: the MAJORITY
+    must be agentic TOOL-CALL-FORMATTED traces matching 0002, NOT SO-style Q&A
+    prose (decision #2).
+  - training/clean.py — dedup + quality filter.
+  - training/format.py — to instruction/response in the harness's exact I/O format.
+  - training/finetune.py — QLoRA/LoRA via Unsloth on Threadripper + 3x 3060 Ti.
+    TARGET: "train once, deploy at multiple sizes" — one LoRA onto both base
+    sizes (3B + 7B/14B). NOTE this as a FORK TO VALIDATE (may not hold; if not,
+    train per-size).
+  - training/eval.py — eval vs a held-out Linux benchmark. SHIP GATE: must beat
+    base by >20% on command accuracy AND hit the tool-call validity target.
+  - training/README.md — pipeline runbook.
+Steps:
+  1. Generate (majority agentic tool-call format) -> clean/dedup -> format.
+  2. QLoRA fine-tune; first validate the one-LoRA-two-sizes fork empirically.
+  3. Eval; only register with Ollama (Modelfile) if it clears BOTH ship gates.
+Validation:
+  - eval: fine-tuned model beats base >20% on command accuracy AND >=99.5%
+    tool-call validity on the Phase-4 benchmark. Until then, v0.1 ships on base.
+Risks / Edge cases:
+  - Note: the Opus API is used OFFLINE at BUILD/TRAIN time only — this does NOT
+    violate I1 (no external calls at RUNTIME on the shipped product). Make this
+    distinction explicit in the runbook.
+  - Catastrophic forgetting / hallucination if facts are fine-tuned in (decision
+    #3) -> keep training BEHAVIORAL; facts stay in RAG (Phase 7).
+  - One-LoRA-two-sizes may not transfer -> fall back to per-size LoRAs; this is
+    why it's flagged as a fork to validate, not an assumption.
+  - 8GB/card: a 14B 4-bit (~9GB) doesn't fit one card (A1) — split or lower quant
+    for both training and Radagon inference.
+Subagent orchestration:
+  - Execution shape: [PARALLEL FANOUT OK — runs alongside 5-9] internally a
+    SEQUENTIAL pipeline (generate -> clean -> format -> finetune -> eval).
+  - REQUIRED subagent_type: general-purpose
+  - REQUIRED model: opus for finetune.py + eval.py (training-config reasoning +
+    the ship-gate eval that decides v1.0 model viability); sonnet for generate/
+    clean/format scaffolding.
+  - Run in background: yes (long-running; the whole workstream is non-blocking
+    for v0.1).
+  - Brief template:
+      "Execute Phase 10 of <PLAN_FILE> (PARALLEL workstream, does NOT block v0.1).
+       Build training/{generate,clean.py,format.py,finetune.py,eval.py}. Data MUST
+       be majority agentic tool-call traces matching docs/decisions/0002 (decision
+       #2); behavioral not knowledge (decision #3). Validate one-LoRA-two-sizes as
+       a fork. Ship gate: >20% over base on command accuracy AND >=99.5% tool-call
+       validity. Opus API is build-time only (NOT a runtime call, I1 intact).
+       Touch only training/. Print one-line summary and exit."
+
+=====================================================================
+### PHASE 11: Installer + Build + RPM Packaging  [LAST]
+            Goal: two bootable, branded ISOs that first-boot into the product.
+=====================================================================
+Prerequisites: Phases 1-9 solid end-to-end (do this LAST, per build guidance).
+Deliverables:
+  - distro/rpm/erdtree-agent.spec — RPM packaging core/ + shell/ + os/ + rag/.
+  - build/common.sh, build/build-marika.sh, build/build-radagon.sh — Rocky 9
+    based ISO builds; Rocky branding stripped from all user-visible surfaces (I7).
+  - installer/branding/, installer/screens/, installer/kickstart/ — Erdtree
+    branding, install screens, kickstart that sets shell.py as the login shell
+    (/etc/passwd), installs Ollama, pulls the tier model, lays down
+    /etc/{tier}/config.yaml, sets ERDTREE_TIER.
+  - .github/workflows/build.yml — CI build (offline-capable runner; I1).
+  - docs/install.md.
+Steps:
+  1. RPM spec; build on the Rocky 9 base.
+  2. Kickstart: login shell = shell.py, Ollama installed, model pulled at
+     firstboot (dead-man bash fallback live during the pull, I9/Phase 5),
+     ERDTREE_TIER set, config laid down.
+  3. Build both ISOs; strip Rocky branding everywhere user-visible (I7).
+  4. Boot-test both on target hardware (or VM matching the hardware floor).
+Validation:
+  - SC6: both ISOs install + first-boot into the product shell with the model
+    present (or pulling, with bash fallback live). Grep the installed image for
+    Rocky branding (I7) and AI language (I2) in user-visible surfaces -> zero.
+    Egress monitor on a freshly installed box -> zero outbound at runtime (I1).
+Risks / Edge cases:
+  - First-boot before the model is pulled = a shell-less brick WITHOUT the
+    dead-man fallback. Mitigation: I9 fallback MUST be verified live during the
+    firstboot pull window.
+  - 14B doesn't fit one 8GB card (A1) -> Radagon ISO's Ollama config must split
+    across cards or pin a fitting quant; document the hardware floor.
+  - Rocky branding leaking into a boot splash / MOTD / package metadata (I7).
+    Mitigation: explicit grep gate over the built image.
+Subagent orchestration:
+  - Execution shape: [PARALLEL FANOUT OK — 2 siblings]: build-marika vs
+    build-radagon share common.sh + the spec (author those SEQUENTIALLY first,
+    then fan out the two ISO builds).
+  - REQUIRED subagent_type: general-purpose
+  - REQUIRED model: sonnet (packaging/build scripting); opus for the kickstart +
+    firstboot-pull + dead-man-during-pull integration (the brick-risk path).
+  - Run in background: yes (ISO builds are long wall-clock).
+  - VERIFICATION: route the final installed-image checks (zero egress, zero Rocky
+    branding, zero AI language, dead-man works during firstboot pull) to the
+    audit-duo SKILL — these are the ship-gate invariants and a miss is shipped.
+  - Brief template:
+      "Execute Phase 11 of <PLAN_FILE> (LAST). Build distro/rpm/erdtree-agent.spec
+       + build/common.sh + build-<tier>.sh + installer/ (kickstart sets shell.py
+       login shell, installs Ollama, pulls tier model with dead-man fallback live,
+       sets ERDTREE_TIER, lays /etc/{tier}/config.yaml). Strip Rocky branding (I7).
+       Touch only build/, installer/, distro/. Validation: ISO installs +
+       first-boots into product shell; image grep = zero Rocky/AI-language;
+       runtime egress = zero. Print one-line summary and exit."
+
+---------------------------------------------------------------------
+## 4. DATA MODEL CHANGES
+No database. "State" lives in three places (decision #5): (a) the live box
+(source of truth, re-derived on demand), (b) the append-only audit JSONL at
+/var/log/{tier}/audit.jsonl (durable transcript + episodic memory via RAG), (c)
+the tiny per-host facts file (preamble). The model's context window is
+disposable per-task scratch. Audit JSONL schema (Phase 1): {ts, tier, nl_input,
+translated_command, tool, args, permission_decision, exit_code, stdout_summary,
+stderr_summary, result}. Append-only, fsync-on-write, parseable.
+
+---------------------------------------------------------------------
+## 5. API CONTRACT
+No external HTTP API (I1). The only "endpoint" is the LOCAL Ollama
+OpenAI-compatible endpoint (localhost), consumed by core/model/ollama.py.
+Internal contracts that matter:
+  - Tool-call protocol (docs/decisions/0002): the frozen I/O format the model
+    emits, router.py parses, and training data matches. THE central contract.
+  - Tool interface (core/tools/__init__.py, Phase 2): name, args schema,
+    per-op permission class, execute()->structured result.
+  - Tier config (config.yaml): model tag, prompt path, tools allowlist,
+    retrieval budget, compaction threshold.
+
+---------------------------------------------------------------------
+## 6. WORKER / QUEUE CHANGES
+None. No queue system. The agent loop is synchronous per task. The only
+long-running background processes are os/ watchers (journald interceptor, dmesg
+watcher) feeding context, and (at install) the firstboot model pull.
+
+---------------------------------------------------------------------
+## 7. FRONTEND CHANGES
+None — terminal only, always (I2 / "What This Is NOT"). The "frontend" IS the
+product shell (Phase 5). No GUI in v0.1 or ever.
+
+---------------------------------------------------------------------
+## 8. TESTING STRATEGY
+Unit tests (tests/):
+  - test_permissions (destructive corpus is the keystone), test_audit,
+    test_snapshot, test_tools_* (read live / write dry-run), test_router,
+    test_ollama_roundtrip, test_rag_retrieve, test_compaction, test_tier_loader.
+Integration tests:
+  - test_loop_e2e (full loop on base model), test_dispatch (command-vs-English,
+    0 mis-dispatches), test_deadman (kill Ollama / crash / mid-pull -> bash).
+Benchmark (bench/):
+  - Tool-call validity rate (>=99.5% Radagon; 3B verdict recorded). The #1 bet.
+Ship-gate invariant checks (CI + Phase-11 image grep):
+  - Zero runtime egress (I1). Zero "AI/LLM/model/agent/agentic" in user-facing
+    strings (I2). Zero hardcoded tier/product names in core/ (I6). Zero Rocky
+    branding user-visible (I7). Destructive never auto-confirmed (I3). Every op
+    audited (I4).
+Manual QA checklist:
+  - Install each ISO on the hardware floor; first-boot into product shell; run
+    a read op (instant), a write op (confirm), a destructive op (typed word);
+    kill Ollama mid-session (lands in bash loudly); run a raw command (runs raw);
+    run English intent (translates); exceed context across many tasks (no reset).
+
+---------------------------------------------------------------------
+## 9. ROLLOUT & OBSERVABILITY
+Feature flags: tier config knobs (retrieval budget, compaction threshold, tools
+allowlist) are the per-tier dials. v0.1 ships base model; the fine-tuned model
+is a config swap (Modelfile tag) once Phase-10 eval clears the ship gate.
+Observability: the audit JSONL is the primary local observability surface (no
+remote telemetry — I1). os/ watchers can surface proactive system events.
+Rollback: ISOs are versioned; a bad model is a config tag revert; the dead-man
+bash fallback is the always-available floor (I9). No remote rollback (local-only).
+
+---------------------------------------------------------------------
+## 10. OPEN QUESTIONS
+  Q1  Harness identity + LICENSE verdict (Phase 0). If NO-GO, the loop may need
+      to be hand-rolled — a significant scope change. RESOLVE FIRST.
+  Q2  Can a 3B base drive the tool-call loop at all (Phase-4 spike)? If not,
+      Marika ships reduced (fewer tools / tighter prompts) or waits for the
+      fine-tune. Product decision needed on the Marika story.
+  Q3  Does one-LoRA-two-sizes transfer (Phase 10 fork)? If not, per-size LoRAs.
+  Q4  Corpus redistribution licensing (Phase 7) — ship the index, or ship a
+      build recipe the user runs at firstboot? Affects ISO contents + I1 timing.
+  Q5  Radagon inference on 8GB cards: split a 14B across cards vs pin a smaller
+      quant? Affects latency budget (I8) and the hardware floor messaging.
+  Q6  Hardware floors per tier (Marika gaming-PC, Radagon Threadripper+multi-GPU)
+      — pin exact minimums for installer messaging + boot-test targets.
+
+---------------------------------------------------------------------
+## 11. ESTIMATED EFFORT
+  Phase 0  Gating spikes ......................... M  (CRITICAL PATH START)
+  Phase 1  Safety + awareness core ............... L  (permissions = the keystone)
+  Phase 2  Three core tools ..................... M
+  Phase 3  Ollama + prompt ...................... M
+  Phase 4  Close loop + benchmark + 3B spike .... XL (the #1 technical bet)
+  Phase 5  Shell + OS + dead-man fallback ....... XL (cardinal UX + safety)
+  Phase 6  Remaining tools ..................... L  (parallel fanout)
+  Phase 7  RAG as a tool ........................ L
+  Phase 8  Memory / compaction UX .............. L
+  Phase 9  Tier plumbing ....................... M
+  Phase 10 Training pipeline ................... XL [PARALLEL — off critical path]
+  Phase 11 Installer + build + RPM ............. L  (LAST)
+  Critical path: 0 -> 1 -> 2 -> 3 -> 4 -> 5 -> (6,7,8) -> 9 -> 11.
+  Phase 10 runs alongside 5-9 and gates only the v1.0 model swap, not v0.1 ship.
+  Heaviest risk concentration: Phases 4 and 5 ("the hard 60%", decision #8).
+
+---------------------------------------------------------------------
+## 12. EXECUTOR ORCHESTRATION GUIDE
+
+### 12.1 Parallelism map
+  Phase | Execution        | Siblings | Depends on | Model        | Subagent type
+  P0    | SINGLE (+duo vfy) | —       | none       | opus         | general-purpose
+  P1    | PARALLEL FANOUT   | 3       | P0         | sonnet/opus* | general-purpose
+  P2    | reg SEQ then FAN  | 3       | P1         | sonnet       | general-purpose
+  P3    | SINGLE            | —       | P0,P1      | sonnet       | general-purpose
+  P4    | SEQUENTIAL        | —       | P1,P2,P3   | opus         | general-purpose
+  P5    | SEQUENTIAL        | —       | P4         | opus         | general-purpose
+  P6    | PARALLEL FANOUT   | 7       | P2,P4      | sonnet/opus* | general-purpose
+  P7    | PARALLEL FANOUT   | 2       | P2,P4      | sonnet       | general-purpose
+  P8    | SEQUENTIAL        | —       | P4,P7      | opus         | general-purpose
+  P9    | SEQ then FAN(2)   | 2       | P3-P8      | opus/sonnet* | refractor-pair + general-purpose
+  P10   | PARALLEL WORKSTRM | —       | P0,P4      | opus/sonnet* | general-purpose
+  P11   | SEQ then FAN(2)   | 2       | P1-P9      | sonnet/opus* | general-purpose
+  *split: see each phase's "REQUIRED model" for which file gets opus.
+
+  DAG sketch:
+      P0
+      |
+      P1 ---> P2 ---> P3 ---> P4 ---> P5 ---> { P6, P7 } ---> P9 ---> P11
+                              |                       |
+                              +-----> P8 <------------+
+      P10 (training) runs in PARALLEL off P0+P4; gates only the v1.0 model swap.
+
+### 12.2 Cross-phase work consolidation
+  - docs/decisions/0002 (tool-call format) is read by P3 (prompt), P4 (router),
+    AND P10 (training data). Load it once at executor start; pass the frozen
+    contract into those phases' briefs rather than re-deriving.
+  - core/tools/__init__.py (tool interface) is the shared contract for P2, P6,
+    P7-docs.py. Freeze it in P2 before any tool fans out; don't let two tool
+    siblings redefine it.
+  - The audit-log retrieval machinery (P8 episodic memory) REUSES the RAG
+    retrieval engine (P7). Build the retriever once (P7); P8 points the same
+    engine at the audit JSONL — do not build a second retriever.
+  - The egress monitor / offline-test rig (P0) is reused by P3 (localhost-only),
+    P7 (offline build), and P11 (installed-image zero-egress). Stand it up once.
+  - P9 and P11 both touch tier config semantics; P9 must finalize the config
+    schema before P11's kickstart writes /etc/{tier}/config.yaml.
+
+### 12.3 Model-mix budget
+  Target split across the 12 phases (counting the dominant model per phase):
+    - fable: 0 phases. (No phase here is beyond opus. P4 and P5 are the hardest
+      and are correctly opus — frontier reasoning isn't required; rigorous
+      multi-file integration is, which opus covers. Do not escalate to fable.)
+    - opus: P0, P4, P5, P8, + the opus-tagged files in P1/P6/P9/P10/P11
+      (~35-40% of dispatched work) — safety classifier, the loop+benchmark, the
+      dispatch+dead-man, the memory UX, the de-hardcode refactor, the ship gates.
+    - sonnet: the default for tool wrappers, RAG engineering, tier content,
+      build scripting (~50-55%).
+    - haiku: ~0 — there are no truly trivial single-field phases here; even the
+      "content authoring" phases carry invariant constraints (I2/I7) that warrant
+      sonnet. Do not down-assign to haiku.
+  Sanity check: roughly 40% opus / 55% sonnet / 5% (haiku-eligible trivia) / 0% fable.
+
+### 12.4 Estimated wall-clock
+  Best case (parallelism applied): the critical chain
+  P0 -> P1 -> P2 -> P3 -> P4 -> P5 -> {P6||P7||P8-after-P7} -> P9 -> P11 dominates,
+  with P10 fully overlapped. Roughly 9-12 sequential "phase-units" on the
+  critical path (the XL phases P4, P5 dominate; long wall-clock items — P7 corpus
+  embed, P10 training, P11 ISO builds — are backgrounded).
+  Worst case (strictly serial, no fanout, P10 inline): ~18+ phase-units.
+  Critical path: P0 -> P1 -> P2 -> P3 -> P4 -> P5 -> P9 -> P11. P4 and P5 are the
+  long poles and the risk concentration ("the hard 60%").
+
+### 12.5 Failure recovery policy
+  - P0 (gating): on license NO-GO or incomplete telemetry strip -> STOP and
+    escalate to the user. This reshapes the plan; do not improvise past it.
+  - P1 permissions / P5 dead-man + dispatch / P11 ship-gate invariants: on
+    validation failure -> retry once, then PAUSE and ESCALATE. These are
+    safety/invariant-critical; never auto-skip a failing safety gate.
+  - P2, P6, P7 tool/RAG siblings: on failure -> retry up to 2x with the same
+    subagent (non-flaky expected), then log a deferred-item and continue (a
+    single missing non-core tool does not block the loop).
+  - P4 benchmark below 99.5%: do NOT block v0.1 (base-model ship is acceptable
+    by decision) — record the gap loudly as a deferred-to-P10 item.
+  - P10 (training): non-blocking by design; on eval-gate miss, v0.1 keeps the
+    base model and P10 iterates. Never blocks the v0.1 ship.
+  - Any audit-duo split that does not resolve -> PAUSE and ESCALATE with the
+    honest unresolved split (no manufactured consensus).
+  - Default if unspecified: pause and escalate.
+
+### 12.6 Audit trail location
+  Per-phase evidence: lifecycle/archive/audits/erdtree-v0.1/phase-<id>.md
+  Final rollup:       lifecycle/archive/audits/erdtree-v0.1/FINAL.md
+  (Note: the PRODUCT's own runtime audit log is separate — /var/log/{tier}/
+  audit.jsonl — and is not the executor's build-audit trail.)
+
+=====================================================================
+EARLY GATING ITEMS (do these first, they de-risk everything downstream):
+  G1  Harness telemetry strip + zero-egress proof (P0)  [gates I1]
+  G2  Harness LICENSE verdict for commercial distro shipping (P0)
+  G3  Tool-call reliability benchmark + the 99.5% target (P4)  [the #1 bet]
+  G4  3B agentic-reliability spike — can Marika's 3B drive the loop? (P4)
+
+PARALLEL WORKSTREAM: P10 training (synthetic gen -> clean -> format -> QLoRA ->
+  eval). Behavioral fine-tune only (NOT knowledge). Does NOT block v0.1.
+
+EXPLICITLY DEFERRED OUT OF v0.1:
+  - Radahn (~70B) + Starscourge tiers.
+  - Fleet / multi-node operational RAG (Radahn-era distributed-systems problem).
+  - Any GUI (terminal only, ever).
+  - The fine-tuned model in the INITIAL agent ship (v0.1 = base model + strong
+    system prompt; fine-tune lands v1.0 once P10's eval clears the ship gate).
+  - Any external/cloud runtime dependency (forever — I1).
+
+"CLAUDE CODE ON HARD MODE" (decision #8) — thread through every phase: weaker
+  local engine, irreversible live-system domain, eternal login-shell session,
+  hidden AI raising the reliability bar (users blame "the shell," not "the AI").
+  The harness gives the easy 40%; the hard 60% is P4 (tool-call reliability),
+  P5 (dispatch + dead-man + felt UX), P8 (invisible memory), and the safety
+  gate (P1) — that's where the effort and the training go.
+=====================================================================
+END OF PLAN
+=====================================================================
