@@ -1,0 +1,75 @@
+# erdtree-agent.service — systemd unit for the Erdtree product shell
+#
+# This unit supervises the product shell process (shell/shell.py) for
+# non-login contexts where direct supervision is wanted (e.g. a managed
+# user session, a headless kiosk, or a confined service account).
+#
+# LOGIN-SHELL WIRING NOTE
+#   Configuring this shell as the login shell (/etc/passwd) is done by the
+#   installer at deploy time (Phase 11 / install/ scripts), NOT by this unit.
+#   This unit does NOT need to be active for the login-shell path to work.
+#
+# DEAD-MAN FALLBACK NOTE
+#   The real safety floor is the IN-SHELL fallback in shell/shell.py (B1/I9):
+#   if the inference service is unreachable at startup or dies mid-session,
+#   the shell exec()s into bash automatically and loudly. This unit's
+#   After=/Wants= ordering is therefore a PREFERENCE, not a hard gate — login
+#   MUST NOT HANG if the inference service never comes up. For this reason:
+#     - NO hard Requires= on the inference service (would block login on a
+#       service timeout).
+#     - TimeoutStartSec is bounded so a stuck activation self-terminates.
+#     - The shell's own dead-man path fires instead of a hung login.
+#
+# ORDERING
+#   After=  — start the inference service first if it is going to start, but
+#             do not block if it is absent or disabled.
+#   Wants=  — pull in the inference service when this unit activates, but a
+#             failure of that service does NOT fail THIS unit.
+#
+# I2: no "AI", "LLM", "model", "agent", or "agentic" in any Description/doc.
+# I7: no "Rocky" in any user-facing string.
+
+[Unit]
+Description=Erdtree command shell
+Documentation=file:///opt/erdtree/README
+After=network.target ollama.service
+Wants=ollama.service
+
+[Service]
+# --- Identity -------------------------------------------------------------- #
+# Run as the user account configured at install time (set by the installer).
+# EnvironmentFile carries ERDTREE_TIER, ERDTREE_MODEL, ERDTREE_BASE_URL, etc.
+EnvironmentFile=-/etc/erdtree/erdtree.env
+User=erdtree
+Group=erdtree
+
+# --- Executable ------------------------------------------------------------ #
+ExecStart=/opt/erdtree/venv/bin/python /opt/erdtree/shell/shell.py
+
+# --- Lifecycle ------------------------------------------------------------- #
+# Restart on crash but not on clean exit (the user typed 'exit') or the
+# dead-man bash fallback ran (which exec()s, replacing the process cleanly).
+Restart=on-failure
+RestartSec=2
+
+# Bounded startup window so a stalled activation self-terminates rather than
+# hanging a login session. The in-shell dead-man fallback is the real safety
+# floor (see header comment above).
+TimeoutStartSec=15
+TimeoutStopSec=10
+
+# --- Sandboxing (conservative; tighten per-tier in Phase 11) --------------- #
+# The shell drives real Linux tools, so broad access is intentional for now.
+# PrivateTmp reduces shared /tmp exposure without restricting tool access.
+PrivateTmp=true
+
+# --- Logging --------------------------------------------------------------- #
+# Structured journal output; the product's own audit log is the append-only
+# JSONL at /var/log/<tier>/audit.jsonl (a separate, product-level concern).
+# journald persistence is configured in os/journald/erdtree.conf.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=erdtree
+
+[Install]
+WantedBy=multi-user.target

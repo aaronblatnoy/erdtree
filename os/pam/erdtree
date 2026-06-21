@@ -1,0 +1,70 @@
+# /etc/pam.d/erdtree — PAM stack for Erdtree login integration
+#
+# WHAT THIS IS
+#   A conservative PAM service definition for the Erdtree product shell when
+#   it is used as the login shell. Drop this file into /etc/pam.d/erdtree at
+#   install time (Phase 11).
+#
+# WHAT THIS IS NOT
+#   This file does NOT replace or modify sshd, login, or any other PAM service.
+#   It defines the "erdtree" PAM service that pam_exec or a custom PAM module
+#   can reference. Activating it (adding "session optional pam_exec.so ..." or
+#   setting it as the login shell in /etc/passwd) is done by the installer,
+#   not by this file.
+#
+# SAFETY PHILOSOPHY
+#   - "required" for auth/account: a PAM failure means no login. Correct.
+#   - "optional" for session extras: a failure in an Erdtree-specific session
+#     module falls back gracefully (the user gets a bash session via the
+#     dead-man fallback in shell.py) rather than locking them out.
+#   - NO custom or third-party PAM modules are referenced here; only standard
+#     modules that ship with Linux-PAM on RHEL-family systems.
+#   - SELinux-aware: pam_selinux.so open/close is included; it is a no-op if
+#     SELinux is permissive or disabled, and enforces context on enforcing hosts.
+#
+# LIVE ACTIVATION + /etc/passwd WIRING: DEFERRED — Phase 11 (install/).
+#   Reason: requires a provisioned target host with root access and a real
+#   /etc/passwd entry pointing to shell.py. Not testable on the build host
+#   without root and without a full OS image. The PAM STACK ITSELF is authored
+#   and statically reviewable here.
+#
+# I2: no "AI", "LLM", "model", "agent", or "agentic" in this file.
+# I7: no "Rocky".
+
+# --------------------------------------------------------------------------- #
+# auth — verify the user's identity                                            #
+# --------------------------------------------------------------------------- #
+# Include the system-auth common stack (handles password, Kerberos, SSSD, etc.
+# depending on what is configured on the host). Using "include" keeps us
+# consistent with whatever authselect profile the admin has chosen.
+auth       include      system-auth
+
+# --------------------------------------------------------------------------- #
+# account — enforce account validity (expiry, lockout, time restrictions)      #
+# --------------------------------------------------------------------------- #
+account    required     pam_nologin.so
+account    include      system-auth
+
+# --------------------------------------------------------------------------- #
+# password — change password (used when the session forces a password change)  #
+# --------------------------------------------------------------------------- #
+password   include      system-auth
+
+# --------------------------------------------------------------------------- #
+# session — set up and tear down the user session                              #
+# --------------------------------------------------------------------------- #
+
+# SELinux context: open before anything else, close after everything else.
+# These are no-ops if SELinux is disabled or permissive.
+session    optional     pam_selinux.so open
+session    required     pam_loginuid.so
+
+# Standard session setup (limits, environment, keyring, etc.)
+session    include      system-auth
+
+# Log the session open/close to the system journal via utmp/wtmp.
+session    optional     pam_lastlog.so showfailed
+session    optional     pam_motd.so
+
+# SELinux context close — must be last in session.
+session    optional     pam_selinux.so close
