@@ -1,0 +1,10 @@
+{
+  "id": "svc-status-002",
+  "domain": "services",
+  "turn_type": "action",
+  "system_context": "distro=Rocky Linux 9; sshd.service: active(running)",
+  "user": "is sshd running?",
+  "tools": ["services"],
+  "expect": { "tool": "services", "arguments_contains": { "operation": "status", "unit": "sshd.service" }, "permission_class": "read" },
+  "notes": "Read op — instant, no confirm."
+}

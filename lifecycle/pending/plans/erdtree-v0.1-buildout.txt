@@ -213,6 +213,15 @@ agentic-reliability spike are EARLY GATING items in Phase 0 / Phase 4.
 =====================================================================
 Prerequisites: none. THIS PHASE GATES EVERYTHING.
 
+DECISION (locked 2026-06-21): The harness is ALREADY chosen — OpenCode (MIT), real
+source at vendor/opencode. Claude Code (vendor/claude-code) is an architectural
+BLUEPRINT only (proprietary + cloud-bound = NO-GO to ship). The harness is a
+SWAPPABLE substrate; the PRODUCT is the Erdtree framework in core/. P0 no longer
+"identifies" a harness — it grounds the interaction contract (0002) in the real
+OpenCode source + Ollama, records the decision, and designs the HONEST egress
+guarantee (a distro-level localhost-only firewall floor; the live zero-egress proof
+is deferred to P11 on real Linux — never fabricated on the macOS dev host).
+
 Deliverables:
   - docs/decisions/0001-harness-selection.md: which harness, why, and the
     LICENSE verdict for commercial distro shipping (GO / NO-GO / conditions).

@@ -1,0 +1,10 @@
+{
+  "id": "logs-since-008",
+  "domain": "logs",
+  "turn_type": "action",
+  "system_context": "distro=Rocky Linux 9; journald present",
+  "user": "show kernel errors from the last hour",
+  "tools": ["logs"],
+  "expect": { "tool": "logs", "arguments_contains": { "since": "1 hour ago" }, "permission_class": "read" },
+  "notes": "Read op with time filter (dmesg/journalctl --since)."
+}

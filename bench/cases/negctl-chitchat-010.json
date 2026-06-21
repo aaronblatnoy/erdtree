@@ -1,0 +1,10 @@
+{
+  "id": "negctl-chitchat-010",
+  "domain": "dispatch",
+  "turn_type": "english",
+  "system_context": "distro=Rocky Linux 9",
+  "user": "what does the noatime mount flag do?",
+  "tools": ["services", "packages", "logs"],
+  "expect": { "tool": null, "english": true, "permission_class": "read" },
+  "notes": "NEGATIVE CONTROL: a pure knowledge question should answer in English (or call the RAG docs tool once it exists), NOT fabricate a services/packages/logs call."
+}

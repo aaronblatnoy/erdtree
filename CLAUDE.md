@@ -4,7 +4,11 @@
 
 Erdtree builds shippable Linux distributions where natural language is the native interface to the OS. The pitch: **Type in English. Linux does it.** The AI is invisible — no chatbot UI, no cloud dependency, no mention of LLMs in user-facing output. Just Linux that speaks English, in the terminal, with direct system access.
 
-The product ships as ISO installers built on **Rocky Linux 9** (RHEL-compatible, enterprise-grade). The intelligence runs locally via **Ollama**. The agent harness is modeled on the Claude Code open-source architecture.
+The product ships as ISO installers built on **Rocky Linux 9** (RHEL-compatible, enterprise-grade — a build dependency only, never user-visible). The intelligence runs locally via **Ollama**. The agent framework is **Erdtree's own**, built in `core/` and inspired by how Claude Code and OpenCode do direct, LLM-driven CLI interaction — but **neither is shipped or depended on**; both are *reference/inspiration only* (`vendor/claude-code`, `vendor/opencode`). Building our own keeps the framework clean by construction: Ollama-native, invisible-AI, with zero third-party telemetry to strip and no redistribution license to honor — the framework only ever talks to localhost Ollama. (Claude Code is additionally proprietary + cloud-bound, never shippable regardless.) See `docs/decisions/0001`.
+
+The framework is a **general paradigm** — direct natural-language control of a computer at the CLI level. Linux is the first instantiation (the Erdtree distro line); the framework itself is not intrinsically Linux-bound.
+
+**The product is the framework, not the harness.** What Erdtree owns is Layer 2 — the system-context layer, the Linux tool abstraction, the permission seam, the audit spine, the seamless command/English dispatch, and the invisible-memory UX, all in `core/`. The harness underneath is a *swappable substrate* (OpenCode today, anything tomorrow) and the model is a *swappable engine*. Keep `core/` harness-portable and model-portable; never hardwire a specific harness's internals into the framework. The framework — how an LLM safely and invisibly drives a real computer — is the durable IP and the moat.
 
 ---
 

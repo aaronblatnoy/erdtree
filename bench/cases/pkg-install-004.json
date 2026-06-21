@@ -1,0 +1,10 @@
+{
+  "id": "pkg-install-004",
+  "domain": "packages",
+  "turn_type": "action",
+  "system_context": "distro=Rocky Linux 9; pkg mgr=dnf; postgresql not installed",
+  "user": "install postgresql",
+  "tools": ["packages"],
+  "expect": { "tool": "packages", "arguments_contains": { "operation": "install", "name": "postgresql" }, "permission_class": "write" },
+  "notes": "dnf not apt (gotcha). Write-confirm with transaction summary."
+}

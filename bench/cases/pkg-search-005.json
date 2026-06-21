@@ -1,0 +1,10 @@
+{
+  "id": "pkg-search-005",
+  "domain": "packages",
+  "turn_type": "action",
+  "system_context": "distro=Rocky Linux 9; pkg mgr=dnf",
+  "user": "what package provides the ss command?",
+  "tools": ["packages"],
+  "expect": { "tool": "packages", "arguments_contains": { "operation": "search" }, "permission_class": "read" },
+  "notes": "Read op; search/provides query."
+}

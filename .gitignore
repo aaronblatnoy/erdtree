@@ -1,0 +1,22 @@
+# Reference harnesses — inspiration only, read locally on the dev host, never shipped or synced
+vendor/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# Training + RAG data (large / generated)
+training/data/
+rag/index/
+data/
+
+# Build artifacts
+dist/
+*.iso
+build/staging/
+
+# OS
+.DS_Store

@@ -1,0 +1,10 @@
+{
+  "id": "negctl-rawcmd-009",
+  "domain": "dispatch",
+  "turn_type": "english",
+  "system_context": "distro=Rocky Linux 9",
+  "user": "df -h",
+  "tools": ["services", "packages", "logs"],
+  "expect": { "tool": null, "english": true, "permission_class": "read" },
+  "notes": "NEGATIVE CONTROL (SC4): an already-valid command must NOT be turned into a tool call; the shell runs it raw. Not counted in validity denominator; documents the no-mistranslate boundary."
+}

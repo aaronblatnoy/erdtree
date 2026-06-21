@@ -1,0 +1,10 @@
+{
+  "id": "logs-tail-007",
+  "domain": "logs",
+  "turn_type": "action",
+  "system_context": "distro=Rocky Linux 9; nginx.service: failed (exit 1) 2m ago",
+  "user": "why is nginx not starting",
+  "tools": ["logs", "services"],
+  "expect": { "tool": "logs", "arguments_contains": { "unit": "nginx.service" }, "permission_class": "read" },
+  "notes": "Plan canonical phrase; expects a journalctl read for the failing unit."
+}

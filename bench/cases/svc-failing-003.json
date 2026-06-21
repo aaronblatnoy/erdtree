@@ -1,0 +1,10 @@
+{
+  "id": "svc-failing-003",
+  "domain": "services",
+  "turn_type": "action",
+  "system_context": "distro=Rocky Linux 9; failed units: postgresql.service, chronyd.service",
+  "user": "show me all failing services",
+  "tools": ["services"],
+  "expect": { "tool": "services", "arguments_contains": { "operation": "status" }, "permission_class": "read" },
+  "notes": "Plan canonical phrase; system-context already lists failures (I5)."
+}

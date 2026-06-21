@@ -1,0 +1,10 @@
+{
+  "id": "svc-restart-001",
+  "domain": "services",
+  "turn_type": "action",
+  "system_context": "distro=Rocky Linux 9; kernel=5.14; nginx.service: active(running); 8 services running",
+  "user": "restart nginx",
+  "tools": ["services"],
+  "expect": { "tool": "services", "arguments_contains": { "operation": "restart", "unit": "nginx.service" }, "permission_class": "write" },
+  "notes": "Canonical write-confirm path; the e2e keystone scenario."
+}
