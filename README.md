@@ -41,7 +41,8 @@ Erdtree distros ship as an ISO installer built on Rocky Linux 9 — RHEL-compati
 |------|------|-------|--------|
 | 1 | **Linux Marika** | ~3B quantized | Hobbyists, homelabbers |
 | 2 | **Linux Radagon** | 7B–14B specialized | Professional sysadmins, data centers |
-| 3 | **Linux Radahn** | Massive, dedicated infra | Hyperscale enterprise |
+
+*I plan on releasing more robust enterprise grade models in the future!*
 
 ---
 
