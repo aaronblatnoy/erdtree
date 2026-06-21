@@ -6,8 +6,6 @@ I recently set up my first server on Linux Arch. Nothing crazy — just getting 
 
 Eventually I went further — I set up Claude Code on the server so I could talk to it directly from my machine. Type what I wanted in plain English, and it would figure out the commands and run them. This works remarkably well. But it also felt like a workaround. I was bolting a natural language interface onto an OS that was never designed for it.
 
-After a few hours of this I realized I was essentially using AI as a translation layer between English and Linux. The AI understood me perfectly. The computer just needed a middleman.
-
 That's when the question hit me:
 
 **What if Linux just understood English?**
