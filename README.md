@@ -4,7 +4,7 @@
 
 I recently set up my first server on Linux Arch. Nothing crazy — just getting services running, configuring storage, opening the right ports. But I kept hitting the same wall: I knew *what* I wanted to do, I just didn't know the  command. So I'd tab over to Claude, describe what I needed, paste the command back into the terminal, and run it. This was a hassle.
 
-Eventually I went further — I set up Claude Code on the server so I could talk to it directly from my machine. Type what I wanted in plain English, and it would figure out the commands and run them. This works remarkably well. But it also felt like a workaround. I was bolting a natural language interface onto an OS that was never designed for it.
+Eventually I set up Claude Code on the server so I could talk to it directly from my machine. Type what I wanted in plain English, and it would figure out the commands and run them. This works remarkably well. But it also felt like a workaround. I was bolting a natural language interface onto an OS that was never designed for it.
 
 That's when the question hit me:
 
