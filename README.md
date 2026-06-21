@@ -1,6 +1,6 @@
 # Erdtree
 
-## Linux CLI Commands are a Hassle
+## Linux CLI Commands Suck.
 
 I recently set up my first server on Linux Arch. Nothing crazy — just getting services running, configuring storage, opening the right ports. But I kept hitting the same wall: I knew *what* I wanted to do, I just didn't know the  command. So I'd tab over to Claude, describe what I needed, paste the command back into the terminal, and run it. This was a hassle.
 
