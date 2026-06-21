@@ -5,20 +5,52 @@
 - Phase: 0 (Gating Spikes)
 - Read by: Phase 3 (`core/agent/prompt.py`), Phase 4 (`core/agent/router.py`), Phase 10 (training data)
 - Gates: the central internal contract (plan §5); decision #2 (tool-call reliability is the #1 bet)
+- Scope: **framework-level and portable.** This is Erdtree's OWN tool-call contract (per 0001 we
+  build our own framework; we do NOT import or ship OpenCode). The OpenCode files cited below are
+  read as INSPIRATION/GROUNDING ONLY — to confirm the wire shape `core/` independently targets is
+  the same OpenAI-Chat function-calling shape a real compatible harness emits AND, critically, the
+  shape **Ollama's `/v1/chat/completions` endpoint presents**.
 
 ## Decision
 
 The frozen tool-call I/O format is **OpenAI Chat Completions function/tool calling**, exactly as
-emitted and parsed by the selected harness (OpenCode, on the Vercel AI SDK via
-`@ai-sdk/openai-compatible`) and exactly as **Ollama's `/v1/chat/completions` endpoint presents**.
-This is the contract `router.py` parses, `prompt.py` formats, and training data (Phase 10) must
-match byte-for-byte.
+**Ollama's `/v1/chat/completions` endpoint presents** (Ollama's OpenAI-compatible API). This is the
+contract `core/agent/router.py` parses, `core/agent/prompt.py` formats, and training data (Phase 10)
+must match byte-for-byte. It is independent of any harness: `core/` speaks this shape directly to
+localhost Ollama.
 
-Source of truth: OpenCode defines each tool with a JSON-Schema-7 parameter schema
-(`packages/opencode/src/tool/tool.ts`: `parameters` / `jsonSchema?: JSONSchema7`) and drives the
-model through the AI SDK, whose openai-compatible provider speaks OpenAI Chat Completions tool
-calls. A malformed call is a typed `ToolInvalidArgumentsError` whose message asks the model to
-"rewrite the input so it satisfies the expected schema" — this defines our re-ask contract.
+Grounding sources (read as INSPIRATION ONLY; NOT imported, NOT shipped — all paths under
+`vendor/opencode`, pinned v1.17.9, commit `f12ac6f`, verified present). They are cited to prove the
+shape we target equals what a real OpenAI-Chat-compatible implementation emits/parses:
+- `packages/llm/src/protocols/openai-chat.ts` — the actual OpenAI Chat wire schema OpenCode emits and
+  parses. The request body (`bodyFields`, lines 89-105) carries `model`, `messages`, `tools`,
+  `tool_choice`, `stream: true`. A tool is `{type:"function", function:{name, description, parameters}}`
+  (`OpenAIChatTool` / `lowerTool`, lines 41-44, 177-184). An assistant tool call is
+  `{id, type:"function", function:{name, arguments}}` where `arguments` is a **string**
+  (`OpenAIChatAssistantToolCall`, lines 47-55; `lowerToolCall` JSON-encodes input at line 199). A tool
+  result is `{role:"tool", tool_call_id, content}` (message union line 77; `lowerToolMessages` lines
+  262-283). Streaming deltas accumulate by `index` with `id`/`name` once and `arguments` concatenated
+  (`OpenAIChatToolCallDelta` lines 136-141; `step` accumulator lines 416-428; `mapFinishReason` maps
+  `"tool_calls"`/`"function_call"` → tool-calls, lines 370-376; args are JSON-finalized eagerly at the
+  finish boundary, `ToolStream.finishAll`, lines 432-435).
+- `packages/llm/src/protocols/openai-compatible-chat.ts` — confirms non-OpenAI providers (Ollama)
+  reuse `OpenAIChat.protocol` end-to-end at endpoint `/chat/completions` with SSE framing (lines 17-22).
+  So Ollama's `/v1/chat/completions` is parsed by the identical state machine.
+- `packages/llm/src/tool.ts` — each tool bundles a JSON-Schema parameter schema; the record key
+  becomes the wire tool name (`toDefinitions`, lines 221-230). This is the per-tool schema our Phase-2
+  registry must emit.
+- `packages/llm/src/tool-runtime.ts` — the dispatch/validity contract: an unregistered tool yields
+  `"Unknown tool: <name>"` (line 25) and a parameter decode failure yields
+  `"Invalid tool input: <error>"` (line 39) as a `ToolFailure` — these are the low-level MISS signals
+  our `router.py` mirrors.
+- `packages/opencode/src/tool/tool.ts` — the higher-level typed `ToolInvalidArgumentsError`
+  (`"ToolInvalidArgumentsError"`, line 25) whose message is *"The `<tool>` tool was called with
+  invalid arguments: `<detail>`. Please rewrite the input so it satisfies the expected schema."*
+  (line 32) — this is the exact re-ask wording §5 adopts.
+
+NOTE: this contract is framework-level and portable. Erdtree's `core/` does NOT import OpenCode; the
+above files are read only to confirm the wire format we independently target equals what a real
+OpenAI-Chat-compatible harness emits AND what Ollama presents.
 
 ## Endpoint shape Ollama must present (decision)
 
@@ -30,11 +62,14 @@ calls. A malformed call is a typed `ToolInvalidArgumentsError` whose message ask
 
 ## 1. Tool advertisement (request → model)
 
+(`"messages"` is shown empty here for brevity; the assembled message array is specified in §4 and the
+prompt layer, Phase 3. The example below is a complete, parseable request body.)
+
 ```json
 {
   "model": "qwen2.5:14b-instruct-q4_K_M",
   "stream": true,
-  "messages": [ /* see §4 */ ],
+  "messages": [],
   "tools": [
     {
       "type": "function",
@@ -140,8 +175,11 @@ registered tool, and `function.arguments` parses as JSON AND validates against t
 schema. Anything else (prose where a tool was required, unknown tool, unparseable/invalid args) is a
 MISS. On a MISS, `router.py` feeds back a `role:"tool"` (or system) message mirroring OpenCode's
 contract — *"The `<tool>` tool was called with invalid arguments: `<detail>`. Please rewrite the
-input so it satisfies the expected schema."* — and re-asks; it never crashes. This MISS definition
-is what `bench/` measures (target ≥99.5% valid; see `bench/README.md`).
+input so it satisfies the expected schema."* (verbatim from
+`packages/opencode/src/tool/tool.ts:32`; the lower-level `tool-runtime.ts` equivalents are
+`"Unknown tool: <name>"` at line 25 and `"Invalid tool input: <error>"` at line 39) — and re-asks; it
+never crashes. This MISS definition is what `bench/` measures (target ≥99.5% valid; see
+`bench/README.md`).
 
 ## Freeze statement
 

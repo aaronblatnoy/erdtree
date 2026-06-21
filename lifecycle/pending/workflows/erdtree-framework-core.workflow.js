@@ -40,6 +40,9 @@ const passSchema = {
 
 function preamble(phaseId) {
   return (
+    `IMPORTANT — REPO ROOT: the Erdtree repo is at ${REPO}. Your shell CWD may be elsewhere, so FIRST run ` +
+    `cd ${REPO}, and treat EVERY relative file path below as relative to that repo root (e.g. ` +
+    `"core/agent/permissions.py" means ${REPO}/core/agent/permissions.py). ` +
     `Before anything: read ${CLAUDE_MD} (canonical context + Load-Bearing Invariants) and the relevant phase of ${PLAN}. ` +
     `DEV-HOST MODE: you are on a macOS host with NO Ollama, NO GPU, and NO Linux OS integration (systemctl/dnf/journalctl/` +
     `systemd/pam/firewalld do NOT exist here). WRITE the framework code + unit tests; MOCK anything that needs a live model ` +
@@ -103,7 +106,7 @@ const [p1ctx, p1perm, p1audit] = await parallel([
         'short-TTL cache is a latency optimization only (the live box stays source of truth). passed iff test_snapshot is ' +
         'green against fixtures.'
     ),
-    { label: 'P1-context', phase: 'P1', model: 'sonnet', agentType: 'general-purpose', isolation: 'worktree', schema: passSchema }
+    { label: 'P1-context', phase: 'P1', model: 'sonnet', agentType: 'general-purpose', schema: passSchema }
   ),
   () => agent(
     p1Brief(
@@ -114,7 +117,7 @@ const [p1ctx, p1perm, p1audit] = await parallel([
         'taxonomy (rm -rf, mkfs, dd, partition ops, user/SSH/firewall lockout, remote reboot). passed iff a curated ' +
         'destructive corpus is ALWAYS gated and NEVER auto-confirmable, and non-interactive destructive is refused (I3).'
     ),
-    { label: 'P1-permissions', phase: 'P1', model: 'opus', agentType: 'general-purpose', isolation: 'worktree', schema: passSchema }
+    { label: 'P1-permissions', phase: 'P1', model: 'opus', agentType: 'general-purpose', schema: passSchema }
   ),
   () => agent(
     p1Brief(
@@ -123,7 +126,7 @@ const [p1ctx, p1perm, p1audit] = await parallel([
         'stdout_summary, stderr_summary, result); fsync-on-write; atomic; survives crash mid-write. Fully testable here. ' +
         'passed iff exactly one parseable JSONL line per op, append-only, partial-write recovery verified (I4).'
     ),
-    { label: 'P1-audit', phase: 'P1', model: 'sonnet', agentType: 'general-purpose', isolation: 'worktree', schema: passSchema }
+    { label: 'P1-audit', phase: 'P1', model: 'sonnet', agentType: 'general-purpose', schema: passSchema }
   ),
 ]);
 if (p1perm.passed !== true) {
@@ -169,11 +172,11 @@ const p2Brief = (name, extra) =>
   `${name}.py. passed iff test_tools_${name} is green against mocks.`;
 const [p2svc, p2pkg, p2log] = await parallel([
   () => agent(p2Brief('services', 'systemctl status/start/stop/restart/enable/logs; restart=write-confirm; mask=write.'),
-    { label: 'P2-services', phase: 'P2', model: 'sonnet', agentType: 'general-purpose', isolation: 'worktree', schema: passSchema }),
+    { label: 'P2-services', phase: 'P2', model: 'sonnet', agentType: 'general-purpose', schema: passSchema }),
   () => agent(p2Brief('packages', 'dnf install/remove/update/search/info; a remove whose transaction plan removes kernel/SSH = destructive; surface the dnf transaction summary in the confirm.'),
-    { label: 'P2-packages', phase: 'P2', model: 'sonnet', agentType: 'general-purpose', isolation: 'worktree', schema: passSchema }),
+    { label: 'P2-packages', phase: 'P2', model: 'sonnet', agentType: 'general-purpose', schema: passSchema }),
   () => agent(p2Brief('logs', 'journalctl + dmesg query/filter/tail/since; surface audit2allow-style hints for SELinux denials.'),
-    { label: 'P2-logs', phase: 'P2', model: 'sonnet', agentType: 'general-purpose', isolation: 'worktree', schema: passSchema }),
+    { label: 'P2-logs', phase: 'P2', model: 'sonnet', agentType: 'general-purpose', schema: passSchema }),
 ]);
 const p2deferred = [p2svc, p2pkg, p2log].filter((r) => r.passed !== true).map((r) => r.summary);
 if (p2deferred.length) log(`P2 deferred tool(s): ${p2deferred.join(' | ')}`);
@@ -276,7 +279,7 @@ const p6Specs = [
 ];
 const p6Results = await parallel(
   p6Specs.map((s) => () => agent(s.brief, {
-    label: `P6-${s.name}`, phase: 'P6', model: s.model, agentType: 'general-purpose', isolation: 'worktree', schema: passSchema,
+    label: `P6-${s.name}`, phase: 'P6', model: s.model, agentType: 'general-purpose', schema: passSchema,
   }))
 );
 const p6deferred = p6Specs
@@ -333,9 +336,9 @@ const p9content = (tier, primary, spec) =>
   `prompt are AI-language-free (I2) and Rocky-free (I7) and the config loads via tier.py.`;
 const [p9radagon, p9marika] = await parallel([
   () => agent(p9content('radagon', true, 'base Qwen2.5 14B (and a 7B fallback tag), full toolset'),
-    { label: 'P9-radagon', phase: 'P9', model: 'sonnet', agentType: 'general-purpose', isolation: 'worktree', schema: passSchema }),
+    { label: 'P9-radagon', phase: 'P9', model: 'sonnet', agentType: 'general-purpose', schema: passSchema }),
   () => agent(p9content('marika', false, 'base Qwen2.5 3B, tighter compaction, possibly a reduced tool allowlist'),
-    { label: 'P9-marika', phase: 'P9', model: 'sonnet', agentType: 'general-purpose', isolation: 'worktree', schema: passSchema }),
+    { label: 'P9-marika', phase: 'P9', model: 'sonnet', agentType: 'general-purpose', schema: passSchema }),
 ]);
 if (p9radagon.passed !== true || p9marika.passed !== true) {
   return { status: 'HALTED_AT_P9', reason: 'tier content authoring failed (config/prompt must load + be I2/I7-clean).', p9radagon, p9marika };

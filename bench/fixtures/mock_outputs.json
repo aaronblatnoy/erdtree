@@ -1,0 +1,60 @@
+{
+  "_comment": "Recorded / MOCK model outputs keyed by bench case id, in the AssembledResponse shape ({content, tool_calls:[{id,name,arguments}]}). These are HAND-AUTHORED dev-host fixtures, NOT live model results — they exercise the runner's scoring against the REAL Phase-2 tool schemas (valid calls + the two english controls). The LIVE rate across Qwen 14B/7B/3B is DEFERRED-TO-MOSSAD. arguments is a JSON-ENCODED STRING per 0002 §2.",
+
+  "svc-restart-001": {
+    "content": "",
+    "tool_calls": [
+      {"id": "call_1", "name": "services", "arguments": "{\"operation\":\"restart\",\"unit\":\"nginx.service\"}"}
+    ]
+  },
+  "svc-status-002": {
+    "content": "",
+    "tool_calls": [
+      {"id": "call_2", "name": "services", "arguments": "{\"operation\":\"status\",\"unit\":\"sshd.service\"}"}
+    ]
+  },
+  "svc-failing-003": {
+    "content": "",
+    "tool_calls": [
+      {"id": "call_3", "name": "services", "arguments": "{\"operation\":\"status\",\"unit\":\"*\"}"}
+    ]
+  },
+  "pkg-install-004": {
+    "content": "",
+    "tool_calls": [
+      {"id": "call_4", "name": "packages", "arguments": "{\"operation\":\"install\",\"packages\":[\"postgresql\"]}"}
+    ]
+  },
+  "pkg-search-005": {
+    "content": "",
+    "tool_calls": [
+      {"id": "call_5", "name": "packages", "arguments": "{\"operation\":\"search\",\"keyword\":\"ss\"}"}
+    ]
+  },
+  "pkg-remove-destructive-006": {
+    "content": "",
+    "tool_calls": [
+      {"id": "call_6", "name": "packages", "arguments": "{\"operation\":\"remove\",\"packages\":[\"kernel\"]}"}
+    ]
+  },
+  "logs-tail-007": {
+    "content": "",
+    "tool_calls": [
+      {"id": "call_7", "name": "logs", "arguments": "{\"operation\":\"query\",\"unit\":\"nginx.service\"}"}
+    ]
+  },
+  "logs-since-008": {
+    "content": "",
+    "tool_calls": [
+      {"id": "call_8", "name": "logs", "arguments": "{\"operation\":\"since\",\"since\":\"1 hour ago\"}"}
+    ]
+  },
+  "negctl-rawcmd-009": {
+    "content": "df -h reports filesystem disk usage in human-readable units.",
+    "tool_calls": []
+  },
+  "negctl-chitchat-010": {
+    "content": "The noatime mount option stops the filesystem from updating a file's access time on every read, reducing write traffic.",
+    "tool_calls": []
+  }
+}
