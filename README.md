@@ -1,6 +1,6 @@
-# Erdtree
+# Erdtree Linux Suite
 
-## Linux CLI Commands Suck.
+## Linux CLI Commands Suck
 
 I recently set up my first server on Linux Arch. Nothing crazy — just getting services running, configuring storage, opening the right ports. But I kept hitting the same wall: I knew *what* I wanted to do, I just didn't know the  command. So I'd tab over to Claude, describe what I needed, paste the command back into the terminal, and run it. This was a hassle.
 
@@ -42,7 +42,7 @@ Erdtree distros ship as an ISO installer built on Rocky Linux 9 — RHEL-compati
 | 1 | **Linux Marika** | ~3B quantized | Hobbyists, homelabbers |
 | 2 | **Linux Radagon** | 7B–14B specialized | Professional sysadmins, data centers |
 
-*I plan on releasing more robust, enterprise-grade models in the future!*
+*More robust, enterprise-grade distros to come!*
 
 ---
 
