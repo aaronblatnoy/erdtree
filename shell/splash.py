@@ -59,39 +59,34 @@ _TRANSPARENT = {".", " "}
 # An even number of rows so they pair cleanly into half-block lines.           #
 # --------------------------------------------------------------------------- #
 
-# Marika — golden hair under a crown, calm face, gold gown. A full little
-# figure with outline + shading so it reads at small size.
+# Marika — Radagon's sister in the same gold-haired family (y/w/n hair under a
+# gold laurel crown c/C), but her own figure: a clean, symmetric head with a
+# soft vague face (pale skin k, faint eyes z — no cracked-stone shadow), and a
+# slim feminine body — a dark gown (N) nipped at the waist with a gold belt (c),
+# the skirt parting at a centered slit where one bare leg steps through.
 _MARIKA = [
-    "....o..o.o..o.o....",
-    "....oCo.CcCcC.oCo....",
-    ".....ooooooooooo.....",
-    "....ooYYyyyyyYYyyoo...",
-    "...oywyyyyyyyyywwyyo..",
-    "..oyyyyyyyyyyyyyyyyo..",
-    "..oywyoooooooooowyyo..",
-    "..oywoSSSSSSSSSSoywo..",
-    ".oyyoSLLSSSSSSLLSoywo.",
-    ".oywoSSSSSSSSSSSSoywo.",
-    ".oywoSSeeSSSSeeSSoywo.",
-    ".oywoSSeeSSSSeeSSoywo.",
-    ".oywoSSSSSkkSSSSSoywo.",
-    ".oywoSSSkmmmmkSSSoywo.",
-    ".oywoSSSSSSSSSSSSoywo.",
-    ".oywwoSSSSSSSSSSoywwo.",
-    "..oywoSSSSSSSSSSoywo..",
-    "..oyywoSSSSSSSSoyywo..",
-    "...oyywooooooooyywo...",
-    "....oyywoooooooywwo...",
-    ".....oGGGGGGGGGGGGo...",
-    "....oGGCcGGGGGGcCGGo..",
-    "...oGGGGnGGGGGGnGGGGo.",
-    "...oGGGGGGGnnGGGGGGGo.",
-    "..oGGGGGGGGnnGGGGGGGGo",
-    "..oGnGGGGGGnnGGGGGGnGo",
-    "..oGnGGGGGGGGGGGGGGnGo",
-    "..ooGGGGGGGGGGGGGGoo..",
-    "....oooonnoooonnoooo..",
-    ".......oooo...oooo....",
+    "...ncCyCcn.......",
+    "..nyyyyyyyn......",
+    ".nyyyyyyyyyn.....",
+    ".wyyyyyyyyyw.....",
+    ".wyyyyyyyyyw.....",
+    ".wyyyykkyyyyw...",
+    ".wyyykkkyyyw.....",
+    ".wyyykkkyyyw.....",
+    ".wyyyywyyyyw....",
+    ".wyyykkkyyyw.....",
+    ".wyyNNNNNyyw....",
+    "..wyyNNNyyw....",
+    "..wyyNNNyyw....",
+    "..wycccccyw....",
+    "..wyyNNNyyw....",
+    ".wyyNNNNNyyw...",
+    ".wyyNNNNNyyw...",
+    "..wyNNNNNyw....",
+    "...NNNNNNN.....",
+    "...NNN.NNN.....",
+    "...NNkSkNN.....",
+    "....NkSkN......",
 ]
 
 # Radagon — scarlet-haired figure in a charcoal robe with a steel armor band,

@@ -62,6 +62,9 @@ from shell.hooks import startup
 # Loud, I2-clean banners (no AI/LLM/model/agent/agentic language)              #
 # --------------------------------------------------------------------------- #
 
+# Edition version shown on the welcome card. Bump per release.
+_EDITION_VERSION = "v0.1"
+
 _BANNER_RULE = "=" * 70
 
 _STARTUP_FALLBACK_BANNER = (
@@ -190,8 +193,69 @@ class ProductShell:
             # if exec itself failed we fall through to here with no shell.
             return 1
 
+        # --- One-time welcome banner ------------------------------------ #
+        # Cosmetic only; never allowed to break a shell that just came up.
+        self._print_welcome()
+
         # --- Input loop, with the mid-session dead-man guard ------------ #
         return self._loop()
+
+    def _print_welcome(self) -> None:
+        """Print the edition's startup banner once (sprite + welcome card).
+
+        Best-effort: any failure here is swallowed — the shell is already up and
+        a missing banner must never take it down. System facts are read from the
+        repl's already-warmed context snapshot (I5/I8), so no extra scan runs.
+        """
+        try:
+            from shell import welcome as welcome_mod
+
+            print(welcome_mod.welcome(self._tier_label, self._system_info()))
+        except Exception:  # noqa: BLE001 — the banner is cosmetic, never fatal
+            pass
+
+    def _system_info(self) -> dict[str, str]:
+        """Live facts for the banner, reusing the repl's cached snapshot.
+
+        Cheap stdlib facts (session, kernel) are always filled; richer counts
+        (packages, services) come from the context snapshot if it is available.
+        I7: never surface the build-distro name — only the kernel and counts.
+        """
+        import getpass
+        import platform
+        import socket
+
+        info: dict[str, str] = {"version": _EDITION_VERSION}
+        try:
+            info["session"] = f"{getpass.getuser()}@{socket.gethostname().split('.')[0]}"
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            info["kernel"] = platform.release()
+        except Exception:  # noqa: BLE001
+            pass
+
+        # Reuse the repl's TurnContext snapshot — warms the same cache turn 1
+        # uses, so this costs nothing extra. Degrades silently if unavailable.
+        ctx = getattr(self._repl, "_context", None)
+        snap = None
+        if ctx is not None:
+            try:
+                snap = ctx.snapshot()
+            except Exception:  # noqa: BLE001
+                snap = None
+        if snap is not None:
+            if getattr(snap, "kernel", ""):
+                info["kernel"] = snap.kernel
+            if getattr(snap, "hostname", ""):
+                user = info.get("session", "@").split("@")[0]
+                info["session"] = f"{user}@{snap.hostname.split('.')[0]}"
+            if getattr(snap, "installed_package_count", 0):
+                info["packages"] = f"{snap.installed_package_count:,} installed"
+            active = getattr(snap, "active_services", None)
+            if active:
+                info["services"] = f"{len(active)} running"
+        return info
 
     def _guarded_start(self) -> bool:
         """Probe reachability, then build the wrapped loop. ANY failure ->
