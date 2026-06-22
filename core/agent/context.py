@@ -32,7 +32,7 @@ from typing import Optional
 from core.context.cache import SnapshotCache
 from core.context.collector import Collector
 from core.context.facts import FactsLoader
-from core.context.snapshot import SystemSnapshot
+from core.context.snapshot import SystemSnapshot, current_identity
 
 
 # A SAFE, I2/I6-clean fallback when context collection raises.  I5: we still
@@ -100,9 +100,27 @@ class TurnContext:
         no-facts path (backward-compatible default).
         """
         snap = self.snapshot(force=force)
+
+        # The cwd changes faster than the snapshot cache TTL — a `cd` between
+        # turns must show up immediately.  Refresh the live location/identity
+        # every turn so "this folder" always resolves against where the
+        # operator actually is, even on a cached or failed snapshot.
+        cwd, home, user = current_identity()
+
         if snap is None:
-            base = _FALLBACK_CONTEXT
+            # Collection failed, but we still anchor the operator's location so
+            # the command interface never guesses an absolute path (I5).
+            loc_lines: list[str] = []
+            if user or home:
+                loc_lines.append(
+                    f"User: {user}".rstrip()
+                    + (f"  Home: {home}" if home else "")
+                )
+            if cwd:
+                loc_lines.append(f"Working directory: {cwd}")
+            base = "\n".join(loc_lines + [_FALLBACK_CONTEXT])
         else:
+            snap.cwd, snap.home_dir, snap.login_user = cwd, home, user
             try:
                 text = snap.to_prompt_text()
             except Exception:  # noqa: BLE001

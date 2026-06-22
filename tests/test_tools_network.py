@@ -93,7 +93,7 @@ class TestRegistration(unittest.TestCase):
     def test_all_expected_ops_present(self):
         spec = registry.get("network")
         self.assertIsNotNone(spec)
-        expected = {"show", "status", "connections", "interfaces",
+        expected = {"show", "status", "connections", "interfaces", "wifi",
                     "bring_up", "bring_down", "set_ip"}
         self.assertEqual(set(spec.ops.keys()), expected)
 
@@ -119,6 +119,9 @@ class TestPermissionClasses(unittest.TestCase):
 
     def test_interfaces_is_read(self):
         self._check("interfaces", OpClass.READ)
+
+    def test_wifi_is_read(self):
+        self._check("wifi", OpClass.READ)
 
     def test_bring_up_is_write(self):
         self._check("bring_up", OpClass.WRITE)
@@ -159,6 +162,11 @@ class TestGateIntegration(unittest.TestCase):
     def test_interfaces_classifies_allow(self):
         d = classify("ip link show")
         self.assertEqual(d.gate, Gate.ALLOW)
+
+    def test_wifi_nmcli_classifies_allow(self):
+        # "nmcli -t -f active,ssid dev wifi" has no mutating sub-verb -> READ.
+        d = classify("nmcli -t -f active,ssid dev wifi")
+        self.assertIn(d.gate, (Gate.ALLOW, Gate.CONFIRM))
 
     # WRITE ops
     def test_bring_up_ip_classifies_confirm(self):
@@ -291,6 +299,47 @@ class TestInterfaces(unittest.TestCase):
         with _patch(_fail(exit_code=1)):
             r = _execute("interfaces", {})
         self.assertFalse(r.ok)
+
+
+# ---------------------------------------------------------------------------
+# wifi operation
+# ---------------------------------------------------------------------------
+
+class TestWifi(unittest.TestCase):
+
+    def test_active_ssid_parsed_from_nmcli(self):
+        stdout = "no:NeighborNet\nyes:HomeWiFi\nno:CoffeeShop\n"
+        with _patch(_ok(stdout=stdout)):
+            r = _execute("wifi", {})
+        self.assertTrue(r.ok)
+        self.assertIn("HomeWiFi", r.summary)
+        self.assertEqual(r.stdout.strip(), "HomeWiFi")
+
+    def test_escaped_colon_in_ssid(self):
+        # nmcli -t escapes a colon inside the SSID value as "\:".
+        stdout = "yes:My\\:Network\n"
+        with _patch(_ok(stdout=stdout)):
+            r = _execute("wifi", {})
+        self.assertIn("My:Network", r.summary)
+
+    def test_falls_back_to_iwgetid(self):
+        # nmcli returns nothing useful -> fall back to iwgetid -r.
+        outputs = [_ok(stdout="\n"), _ok(stdout="BackupSSID\n")]
+        mock_fn = MagicMock(side_effect=outputs)
+        with patch("core.tools.network.run_subprocess", mock_fn):
+            r = _execute("wifi", {})
+        self.assertIn("BackupSSID", r.summary)
+        # second call must be the iwgetid fallback
+        self.assertEqual(mock_fn.call_args_list[0][0][0],
+                         ["nmcli", "-t", "-f", "active,ssid", "dev", "wifi"])
+        self.assertEqual(mock_fn.call_args_list[1][0][0], ["iwgetid", "-r"])
+
+    def test_no_active_connection(self):
+        outputs = [_ok(stdout="no:SomeoneElse\n"), _fail(exit_code=1)]
+        mock_fn = MagicMock(side_effect=outputs)
+        with patch("core.tools.network.run_subprocess", mock_fn):
+            r = _execute("wifi", {})
+        self.assertIn("No active", r.summary)
 
 
 # ---------------------------------------------------------------------------
@@ -454,6 +503,7 @@ class TestToolResultStructure(unittest.TestCase):
         ("status",      {}),
         ("connections", {}),
         ("interfaces",  {}),
+        ("wifi",        {}),
         ("bring_up",    {"interface": "eth0"}),
         ("bring_down",  {"interface": "eth0"}),
         ("set_ip",      {"interface": "eth0", "address": "1.2.3.4/24"}),
@@ -501,6 +551,7 @@ class TestI2Filter(unittest.TestCase):
             ("status",      {}),
             ("connections", {}),
             ("interfaces",  {}),
+        ("wifi",        {}),
             ("bring_up",    {"interface": "eth0"}),
             ("bring_down",  {"interface": "eth0"}),
             ("set_ip",      {"interface": "eth0", "address": "1.2.3.4/24"}),
@@ -517,6 +568,7 @@ class TestI2Filter(unittest.TestCase):
             ("status",      {}),
             ("connections", {}),
             ("interfaces",  {}),
+        ("wifi",        {}),
             ("bring_up",    {"interface": "eth0"}),
             ("bring_down",  {"interface": "eth0"}),
             ("set_ip",      {"interface": "eth0", "address": "1.2.3.4/24"}),

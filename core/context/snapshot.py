@@ -8,8 +8,29 @@ No tier names (I6). No AI/LLM language (I2).
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass, field
 from typing import Optional
+
+
+def current_identity() -> tuple[str, str, str]:
+    """Return the live ``(cwd, home, login_user)`` of the running process.
+
+    Never raises: a deleted/unreadable cwd degrades to "" so a turn never
+    crashes on identity collection.  This is the anchor the operator's
+    relative requests ("this folder", a bare name) resolve against — without
+    it the command interface has no idea *where* the operator is.
+    """
+    try:
+        cwd = os.getcwd()
+    except OSError:
+        cwd = ""
+    try:
+        home = os.path.expanduser("~")
+    except (OSError, KeyError):
+        home = ""
+    user = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
+    return cwd, home, user
 
 
 @dataclass
@@ -46,6 +67,14 @@ class SystemSnapshot:
     os_name: str = ""          # e.g. "Rocky Linux 9.3"
     os_id: str = ""            # /etc/os-release ID field
     kernel: str = ""           # uname -r
+
+    # --- session location / identity ---
+    # The operator's current shell location and identity.  These anchor every
+    # relative request ("this folder", a bare path) so the command interface
+    # never has to guess where the operator is or invent an absolute path.
+    cwd: str = ""              # current working directory
+    home_dir: str = ""         # operator's home directory ($HOME)
+    login_user: str = ""       # login user ($USER)
 
     # --- hardware ---
     cpu_model: str = ""
@@ -92,6 +121,14 @@ class SystemSnapshot:
         lines: list[str] = []
 
         lines.append(f"Host: {self.hostname}")
+        # Location/identity first: the operator's "here" must be unmistakable.
+        if self.login_user or self.home_dir:
+            lines.append(
+                f"User: {self.login_user}".rstrip()
+                + (f"  Home: {self.home_dir}" if self.home_dir else "")
+            )
+        if self.cwd:
+            lines.append(f"Working directory: {self.cwd}")
         if self.os_name:
             lines.append(f"OS: {self.os_name}  kernel: {self.kernel}")
         if self.cpu_model:

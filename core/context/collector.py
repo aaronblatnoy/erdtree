@@ -23,7 +23,12 @@ import subprocess
 from pathlib import Path
 from typing import Callable, Optional
 
-from core.context.snapshot import DiskEntry, PortEntry, SystemSnapshot
+from core.context.snapshot import (
+    DiskEntry,
+    PortEntry,
+    SystemSnapshot,
+    current_identity,
+)
 
 # ---------------------------------------------------------------------------
 # Default subprocess runner — can be replaced in tests with a fixture runner
@@ -112,6 +117,7 @@ class Collector:
         )
 
         snap.hostname = self._collect_hostname(errors)
+        snap.cwd, snap.home_dir, snap.login_user = current_identity()
         self._collect_os(snap, errors)
         self._collect_hardware(snap, errors)
         self._collect_packages(snap, errors)

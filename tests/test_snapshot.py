@@ -172,6 +172,26 @@ class TestCollectorOS:
         assert len(snap.hostname) > 0
 
 
+class TestCollectorIdentity:
+    """cwd/home/user are the anchor for relative requests ('this folder')."""
+
+    def test_cwd_populated(self):
+        import os
+        snap = _make_collector().collect()
+        assert snap.cwd == os.getcwd()
+
+    def test_home_populated(self):
+        import os
+        snap = _make_collector().collect()
+        assert snap.home_dir == os.path.expanduser("~")
+
+    def test_identity_in_prompt_text(self):
+        import os
+        text = _make_collector().collect().to_prompt_text()
+        assert os.getcwd() in text
+        assert "Working directory:" in text
+
+
 class TestCollectorHardware:
     def test_cpu_model_parsed(self):
         snap = _make_collector().collect()

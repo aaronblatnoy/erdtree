@@ -117,6 +117,7 @@ _CASES: list[tuple[str, str, dict, OpClass, Gate]] = [
     ("network", "status", {}, OpClass.READ, Gate.ALLOW),
     ("network", "connections", {}, OpClass.READ, Gate.ALLOW),
     ("network", "interfaces", {}, OpClass.READ, Gate.ALLOW),
+    ("network", "wifi", {}, OpClass.READ, Gate.ALLOW),
     ("network", "bring_up", {"interface": "eth0"}, OpClass.WRITE, Gate.CONFIRM),
     ("network", "set_ip", {"interface": "eth0", "address": "1.2.3.4/24"}, OpClass.WRITE, Gate.CONFIRM),
     # network.bring_down: DESTRUCTIVE — permissions.py now has an explicit rule

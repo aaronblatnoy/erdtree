@@ -151,6 +151,55 @@ def _op_interfaces(args: dict[str, Any]) -> ToolResult:
     )
 
 
+def _op_wifi(args: dict[str, Any]) -> ToolResult:
+    """Report the wireless network (SSID) this host is connected to.
+
+    ``ip addr`` shows addresses but never the SSID, so a dedicated path is
+    required.  Primary source is NetworkManager:
+        nmcli -t -f active,ssid dev wifi
+    whose terse output is one ``active:ssid`` row per visible network; the row
+    with ``active`` == ``yes`` is the connected one.  When NetworkManager is
+    absent we fall back to ``iwgetid -r`` (the raw SSID of the active link).
+    """
+    result = run_subprocess(["nmcli", "-t", "-f", "active,ssid", "dev", "wifi"])
+    ssid = ""
+    if result.ok and result.stdout.strip():
+        for line in result.stdout.splitlines():
+            # -t escapes the field separator inside values as "\:"; split on the
+            # FIRST unescaped colon by temporarily masking the escaped ones.
+            masked = line.replace("\\:", "\x00")
+            parts = masked.split(":", 1)
+            if len(parts) == 2 and parts[0].strip().lower() == "yes":
+                ssid = parts[1].strip().replace("\x00", ":")
+                break
+
+    if not ssid:
+        # Fall back to iwgetid when NetworkManager is not managing the link.
+        fb = run_subprocess(["iwgetid", "-r"])
+        if fb.ok and fb.stdout.strip():
+            ssid = fb.stdout.strip()
+            result = fb
+
+    selinux = _maybe_selinux_hint(result.stderr)
+    if ssid:
+        return ToolResult(
+            exit_code=0,
+            stdout=ssid + "\n",
+            stderr=result.stderr,
+            summary=f"Connected wireless network: {ssid}." + selinux,
+        )
+    if result.ok:
+        summary = "No active wireless connection found."
+    else:
+        summary = f"Wireless status check failed (exit {result.exit_code})."
+    return ToolResult(
+        exit_code=result.exit_code,
+        stdout=result.stdout,
+        stderr=result.stderr,
+        summary=summary + selinux,
+    )
+
+
 def _op_bring_up(args: dict[str, Any]) -> ToolResult:
     """Bring a network interface up.
 
@@ -263,6 +312,7 @@ _DISPATCH: dict[str, Any] = {
     "status":      _op_status,
     "connections": _op_connections,
     "interfaces":  _op_interfaces,
+    "wifi":        _op_wifi,
     "bring_up":    _op_bring_up,
     "bring_down":  _op_bring_down,
     "set_ip":      _op_set_ip,
@@ -353,6 +403,12 @@ NETWORK_SPEC = ToolSpec(
             permission_class=OpClass.READ,
             args=[],
             description="List all network interfaces.",
+        ),
+        "wifi": OpSpec(
+            op_name="wifi",
+            permission_class=OpClass.READ,
+            args=[],
+            description="Show the wireless network (SSID) this host is connected to.",
         ),
         "bring_up": OpSpec(
             op_name="bring_up",
