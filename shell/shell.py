@@ -8,10 +8,13 @@ time via Repl.run_turn and handles mode toggling, raw-bash dispatch, and the
 dead-man bash fallback around it.
 
 MODE STATE
-  - NL mode is the default. The prompt is "[NL] ❯ " in the tier color.
-  - "!!" toggles PERMANENTLY into BASH mode (and back). The prompt becomes
-    "[BASH] $ " in pink/magenta.
+  - NL mode is the default. The prompt is "[user@host dir] NATURAL LANGUAGE ❯ "
+    with the tier-colored tail.
+  - "!!" toggles PERMANENTLY into BASH mode (and back). The prompt becomes the
+    plain Linux "[user@host dir]$ ".
   - "!cmd" runs a SINGLE bash command without leaving NL mode.
+  - A bare "cd" is handled in-process (in either mode) so the working
+    directory — and the prompt — actually changes.
   - In BASH mode, every line runs as raw bash (except "!!", which toggles back).
 
 NL-MODE DISPATCH (shell/dispatch.py, conservative — SC4):
@@ -159,6 +162,7 @@ class ProductShell:
         self._run_command = run_command
         self._state = ShellState()
         self._repl: Optional[object] = None
+        self._oldpwd: Optional[str] = None
 
     # ------------------------------------------------------------------ #
     # Entry point — the OUTERMOST dead-man guard lives here.              #
@@ -255,7 +259,7 @@ class ProductShell:
         if line == "!!":
             self._state.toggle()
             return
-        self._run_command(line)
+        self._exec_raw(line)
 
     # ------------------------------------------------------------------ #
     # NL mode: dispatch -> toggle / raw / English.                        #
@@ -271,13 +275,59 @@ class ProductShell:
         if result.kind is DispatchKind.RAW:
             # "!cmd" single escape OR a heuristically-recognized raw command.
             # Stays in NL mode.
-            self._run_command(result.command)
+            self._exec_raw(result.command)
             return
 
         # ENGLISH -> hand to the wrapped loop, ONE turn, under the mid-session
         # dead-man guard. A ConnectionError here means the local service died
         # mid-session: exec into bash loudly (I9) and never return.
         self._run_english_turn(result.text)
+
+    def _exec_raw(self, command: str) -> None:
+        """Run a raw command, but handle `cd` IN-PROCESS so the shell's working
+        directory (and thus the prompt) actually changes — a subprocess `cd`
+        would not persist. Everything else goes to the raw bash runner.
+        """
+        if self._maybe_cd(command):
+            return
+        self._run_command(command)
+
+    def _maybe_cd(self, command: str) -> bool:
+        """If *command* is a bare `cd [dir]`, change directory here and return
+        True. Compound commands (cd containing ;, |, &&, etc.) fall through to
+        bash. Returns False when it is not a standalone cd.
+        """
+        stripped = command.strip()
+        if stripped != "cd" and not stripped.startswith("cd "):
+            return False
+        if any(ch in stripped for ch in (";", "|", "&", "\n", "`", "$(")):
+            return False  # let bash handle a compound/expanded command
+
+        arg = stripped[2:].strip()
+        if arg == "-":
+            target = self._oldpwd or os.environ.get("OLDPWD") or ""
+            if not target:
+                print("cd: OLDPWD not set", file=sys.stderr)
+                return True
+        elif arg == "" or arg == "~":
+            target = os.path.expanduser("~")
+        else:
+            target = os.path.expanduser(arg)
+
+        try:
+            prev = os.getcwd()
+        except OSError:
+            prev = None
+        try:
+            os.chdir(target)
+        except OSError as exc:
+            print(f"cd: {exc.strerror}: {target}", file=sys.stderr)
+            return True
+        if prev is not None:
+            self._oldpwd = prev
+            os.environ["OLDPWD"] = prev
+        os.environ["PWD"] = os.getcwd()
+        return True
 
     def _run_english_turn(self, text: str) -> None:
         try:

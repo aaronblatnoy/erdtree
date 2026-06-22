@@ -38,6 +38,7 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 
 exec podman run --rm -it \
   --network=host \
+  --hostname "$(uname -n 2>/dev/null || echo erdtree)" \
   --security-opt label=disable \
   -v "$REPO":/opt/erdtree:ro \
   -e ERDTREE_TIER="$TIER" \
