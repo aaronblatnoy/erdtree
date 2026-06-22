@@ -1,0 +1,30 @@
+# Erdtree tier sandbox — a Rocky 9 container that runs the full agent stack in
+# OS isolation so destructive ops (rm/mkfs/userdel/...) hit a disposable overlay,
+# never the host. Inference is delegated to the host's Ollama over the loopback
+# (the container runs with --network=host, so localhost:11434 IS the host's
+# GPU-backed Ollama and the I1 localhost-only assertion still holds).
+#
+# The repo is MOUNTED read-only at /opt/erdtree at run time (see run.sh) rather
+# than copied in, so the sandbox always runs the current tree and a destructive
+# op can never mutate the real source.
+FROM quay.io/rockylinux/rockylinux:9
+
+# Real sysadmin binaries so the agent's tools have actual commands to invoke.
+# (This is a non-systemd container, so systemctl/journalctl are limited — that's
+# expected for a sandbox; the permission gate + audit still exercise fully and
+# destructive ops stay contained regardless.)
+RUN dnf -y install \
+        python3.11 python3.11-pip \
+        iproute procps-ng util-linux findutils shadow-utils \
+        firewalld systemd \
+    && dnf clean all
+
+# Optional docs/RAG backend. The CORE agent imports NONE of this — it degrades
+# OFF when absent (I9) — but installing it lets the docs tool work if an index
+# is present.
+RUN python3.11 -m pip install --no-cache-dir sqlite-vec==0.1.9 || true
+
+ENV ERDTREE_BASE_URL=http://localhost:11434 \
+    PYTHONDONTWRITEBYTECODE=1
+WORKDIR /opt/erdtree
+CMD ["/usr/bin/python3.11", "-m", "shell.shell"]
