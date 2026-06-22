@@ -46,6 +46,7 @@ The confirm / typed-word prompts and the rendering are also injected
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, Protocol
 
@@ -106,24 +107,67 @@ class ConsoleIO:
         # Accumulates content already emitted token-by-token this turn so
         # render() knows not to re-print it.  Empty -> buffered path.
         self._streamed = ""
+        # Presentation state for pretty, in-place tool steps (reset each turn).
+        self._pending_cmd = ""       # command on the currently-open "running" line
+        self._had_tool_step = False  # a step ran this turn -> breathe before answer
+        self._answer_open = False    # the streamed answer has begun this turn
+
+    @staticmethod
+    def _isatty() -> bool:
+        try:
+            return sys.stdout.isatty()
+        except Exception:  # noqa: BLE001 — rendering must never crash the loop
+            return False
 
     def render_delta(self, token: str) -> None:
-        if token:
-            self._streamed += token
-            print(token, end="", flush=True)
+        if not token:
+            return
+        # Breathing room: one blank line between the tool steps and the answer,
+        # only when a step actually ran this turn (answer-only turns unchanged).
+        if self._had_tool_step and not self._answer_open:
+            print()
+        self._answer_open = True
+        self._streamed += token
+        print(token, end="", flush=True)
 
     def tool_step(self, text: str) -> None:
-        # A live "running: <cmd>" line shown just before a cleared op runs.
-        # Dim inline so it reads as harness chatter, not the answer (P3).
-        if text:
-            print(f"\x1b[2m{text}\x1b[0m", flush=True)
+        # Shown just before a gate-cleared op runs. The text is "running: <cmd>";
+        # we render a dim, indented step that RESOLVES IN PLACE (tty) once the
+        # result lands — one clean line per operation, Claude Code-style.
+        if not text:
+            return
+        cmd = text[len("running: "):] if text.startswith("running: ") else text
+        self._pending_cmd = cmd
+        self._had_tool_step = True
+        line = f"\x1b[2m  ⏵ {cmd}\x1b[0m"
+        if self._isatty():
+            print(line, end="", flush=True)   # leave open; resolve in place
+        else:
+            print(line, flush=True)
 
     def tool_step_result(self, text: str) -> None:
-        # A terse status line after a step ("done", "exit 0", "not run").
-        if text:
-            print(f"\x1b[2m{text}\x1b[0m", flush=True)
+        # Resolve the open step line with a status glyph: ✔ done (dim),
+        # ✘ + reason (red) on failure, ⊘ for a gated/declined op.
+        status = (text or "").strip()
+        cmd = self._pending_cmd
+        self._pending_cmd = ""
+        low = status.lower()
+        if low in ("done", "exit 0", "ok", ""):
+            glyph, color, suffix = "✔", "\x1b[2m", ""
+        elif cmd and (low.startswith("exit") or "error" in low or "could not" in low):
+            glyph, color, suffix = "✘", "\x1b[31m", f" · {status}"
+        else:
+            glyph, color, suffix = "⊘", "\x1b[2m", (f" · {status}" if status else "")
+        resolved = f"{color}  {glyph} {cmd}{suffix}\x1b[0m"
+        if self._isatty() and cmd:
+            print("\r\x1b[2K" + resolved, flush=True)   # overwrite the open line
+        else:
+            print(resolved, flush=True)
 
     def render(self, text: str) -> None:
+        # Reset per-turn presentation state (tool-step + answer flags).
+        self._had_tool_step = False
+        self._answer_open = False
         # If this exact text was already streamed token-by-token, do NOT
         # re-print it: just close the line so the next prompt starts fresh.
         if self._streamed:
