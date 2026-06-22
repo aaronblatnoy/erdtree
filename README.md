@@ -12,7 +12,7 @@ That's when the question hit me:
 
 ---
 
-## What Erdtree Is
+## What the Erdtree Suite Is
 
 Erdtree is a suite of Linux distributions where natural language is the native interface to the operating system, powered by custom-trained models that run entirely on your hardware.
 
