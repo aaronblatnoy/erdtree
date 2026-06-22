@@ -78,9 +78,9 @@ def nl_prompt(
     user: str | None = None,
     host: str | None = None,
 ) -> str:
-    """Linux-style prompt with just a tier-colored caret tail."""
+    """Linux-style prompt with a tier-colored $ tail."""
     color = _NL_TIER_COLOR.get(tier, _NL_DEFAULT_COLOR)
-    return f"{_linux_prefix(cwd, user, host)}{color}❯{_RESET} "
+    return f"{_linux_prefix(cwd, user, host)}{color}${_RESET} "
 
 
 def bash_prompt(

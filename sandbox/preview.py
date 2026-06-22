@@ -1,96 +1,101 @@
 #!/usr/bin/env python3
-"""Aesthetic preview — renders the same mock turn in several styles so you can
-see real colors/spacing in your terminal and pick a direction.
+"""Aesthetic preview — renders mock turns through the REAL ConsoleIO so you can
+see the actual terminal look (block output, status glyphs, spacing) without a
+model or a live box.
 
     python3 sandbox/preview.py
 
-No model, no deps — just prints. Pick a style number (or say "3 but tighter
-spacing", "2's gutter with 1's prompt", etc.) and I'll implement it.
+This mirrors the harness's display layer (core/agent/repl.py:ConsoleIO),
+which ports OpenCode's BlockTool: a left-gutter panel whose title is the
+command, the real command output shown verbatim below it, a green ✓ for a
+confirmed write, a red ✗ for a failure, and an amber ⚠ before a destructive
+confirm. On a real tty a braille spinner animates on the title line while a
+slow op runs (it does not show here when stdout is piped).
 """
+import os
 import sys
 
-# Tier caret color = radagon deep red (160). Others: marika gold 220, radahn 203.
-CARET = "\033[38;5;160m"
+# Import the real display layer so the preview never drifts from the product.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core.agent.repl import ConsoleIO  # noqa: E402
+
+CARET = "\033[38;5;160m$\033[0m"   # radagon deep red; marika=220, radahn=203
 DIM = "\033[2m"
-RED = "\033[31m"
-GREEN = "\033[32m"
-GREENDIM = "\033[2;32m"
+AMBER = "\033[33m"
 R = "\033[0m"
 
-USER, HOST, CWD = "aaron", "mossad-server", "~/erdtree"
-REQ = "restart nginx and check free disk"
-OK_CMD = "systemctl restart nginx"
-BAD_CMD = "df -x tmpfs"
-ANSWER_L1 = "nginx restarted and is active."
-ANSWER_L2 = "Disk check failed (exit 1)."
+LS = (
+    "total 32K\n"
+    "drwx------  5 root root 4.0K Jun 22 06:13 .\n"
+    "dr-xr-xr-x  1 root root 4.0K Jun 22 14:00 ..\n"
+    "-rw-r--r--  1 root root  733 Jun 22 06:03 README.txt"
+)
+LSBLK = (
+    "NAME        SIZE TYPE MOUNTPOINT\n"
+    "sda       119.2G disk\n"
+    "├─sda1      100M part /boot/efi\n"
+    "└─sda3    118.6G part /\n"
+    "nvme0n1   931.5G disk"
+)
 
 
-def hdr(n, name):
-    print(f"\n{DIM}{'─'*64}{R}")
-    print(f"  STYLE {n}  ·  {name}")
-    print(f"{DIM}{'─'*64}{R}\n")
+def prompt(req):
+    print(f"[root@mossad-server ~]{CARET} {req}")
 
 
-def style1():
-    hdr(1, "Minimal (current): bracket prompt, in-place steps")
-    print(f"[{USER}@{HOST} {CWD}]{CARET}❯{R} {REQ}")
-    print(f"{DIM}  ✔ {OK_CMD}{R}")
-    print(f"{RED}  ✘ {BAD_CMD} · exit 1{R}")
-    print()
-    print(ANSWER_L1)
-    print(ANSWER_L2)
-
-
-def style2():
-    hdr(2, "Clean gutter: no brackets, vertical-bar steps, airy")
-    print(f"{DIM}{CWD}{R} {CARET}❯{R} {REQ}")
-    print()
-    print(f"{DIM}  │{R} {GREEN}✓{R} {DIM}{OK_CMD}{R}")
-    print(f"{DIM}  │{R} {RED}✗{R} {DIM}{BAD_CMD}{R}  {RED}exit 1{R}")
-    print()
-    print(f"  {ANSWER_L1}")
-    print(f"  {ANSWER_L2}")
-
-
-def style3():
-    hdr(3, "Two-line prompt, arrow steps with trailing status")
-    print(f"{DIM}{USER} {CWD}{R}")
-    print(f"{CARET}❯{R} {REQ}")
-    print(f"{DIM}  → {OK_CMD}{R}  {GREEN}✓{R}")
-    print(f"{DIM}  → {BAD_CMD}{R}  {RED}✗ exit 1{R}")
-    print()
-    print(f"  {ANSWER_L1}")
-    print(f"  {ANSWER_L2}")
-
-
-def style4():
-    hdr(4, "Tight: single-glyph steps, no running line, minimal space")
-    print(f"{DIM}{CWD}{R} {CARET}❯{R} {REQ}")
-    print(f"  {GREENDIM}✔{R} {DIM}{OK_CMD}{R}")
-    print(f"  {RED}✘{R} {DIM}{BAD_CMD}{R} {RED}· exit 1{R}")
-    print(f"  {ANSWER_L1}")
-    print(f"  {ANSWER_L2}")
-
-
-def style5():
-    hdr(5, "Accent gutter bar: thin tier-colored bar down the whole turn")
-    bar = f"{CARET}▏{R}"
-    print(f"{DIM}{CWD}{R} {CARET}❯{R} {REQ}")
-    print(f"{bar} {GREEN}✓{R} {DIM}{OK_CMD}{R}")
-    print(f"{bar} {RED}✗{R} {DIM}{BAD_CMD}{R} {RED}exit 1{R}")
-    print(bar)
-    print(f"{bar} {ANSWER_L1}")
-    print(f"{bar} {ANSWER_L2}")
+def rule():
+    print(f"{DIM}{'─' * 64}{R}")
 
 
 def main():
-    print(f"\n{DIM}Same interaction, five looks. Real colors below. "
-          f"Pick a number or mix elements.{R}")
-    for f in (style1, style2, style3, style4, style5):
-        f()
-    print(f"\n{DIM}{'─'*64}{R}")
-    print("  Tell me: a style number, or e.g. \"2's gutter + 4's tightness\".")
-    print(f"{DIM}{'─'*64}{R}\n")
+    rule()
+
+    # 1) A read: real ls output in a gutter block; no model re-typing.
+    prompt("show me my file structure")
+    io = ConsoleIO()
+    io.begin_turn()
+    io.tool_step("running: ls -lah")
+    io.tool_step_result("done")
+    io.tool_output(LS)
+    rule()
+
+    # 2) A multi-op rundown: two blocks, separated, then a terse synthesis.
+    prompt("give me a rundown of this box")
+    io = ConsoleIO()
+    io.begin_turn()
+    io.tool_step("running: uname -a")
+    io.tool_step_result("done")
+    io.tool_output("Linux mossad-server 5.14.0-427 x86_64 GNU/Linux")
+    io.tool_step("running: lsblk")
+    io.tool_step_result("done")
+    io.tool_output(LSBLK)
+    io.render("4 disks, 261 packages on Rocky 9.8. Root filesystem 4% used.")
+    rule()
+
+    # 3) A confirmed write: a single green ✓ line (no block).
+    prompt("restart nginx")
+    io = ConsoleIO()
+    io.begin_turn()
+    io._pending_confirmed = True
+    io.tool_step("running: systemctl restart nginx.service")
+    io.tool_step_result("done")
+    io.render("nginx.service is active and running.")
+    rule()
+
+    # 4) A destructive op: amber ⚠ then the typed-word gate.
+    prompt("delete the old logs directory")
+    print(f"{AMBER}⚠  recursive forced file removal cannot be undone{R}")
+    print(f"Type DESTROY to proceed: {DIM}(declined){R}")
+    rule()
+
+    # 5) A failed read: red ✗ in the block, then a plain one-line explanation.
+    prompt("show me /opt/sandbox")
+    io = ConsoleIO()
+    io.begin_turn()
+    io.tool_step("running: ls -lah /opt/sandbox")
+    io.tool_step_result("exit 2")
+    io.render("The /opt/sandbox directory does not exist on this host.")
+    rule()
 
 
 if __name__ == "__main__":

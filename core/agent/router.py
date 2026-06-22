@@ -385,10 +385,14 @@ class Router:
         """
         calls = tool_calls or []
 
-        # No tool calls at all -> English turn (0002 §2: content non-null, no
-        # tool_calls = a plain answer).  Not a miss.
+        # No tool calls at all: try salvaging a JSON tool call from content
+        # before treating the turn as English.  Some smaller models emit tool
+        # calls as JSON text in the content field rather than via tool_calls[].
         if not calls:
-            return RouterResult(kind=TurnKind.ENGLISH, content=content)
+            synthetic = _try_parse_content_as_tool_call(content)
+            if synthetic is None:
+                return RouterResult(kind=TurnKind.ENGLISH, content=content)
+            calls = [synthetic]
 
         parsed: list[ParsedCall] = []
         misses: list[MissDetail] = []
@@ -552,3 +556,33 @@ def _clip(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[:limit] + "…[truncated]"
+
+
+def _try_parse_content_as_tool_call(content: str) -> Optional[dict]:
+    """Salvage a tool call emitted as JSON text in the content field.
+
+    Some smaller models write tool calls as a JSON object in their text output
+    instead of populating tool_calls[].  Detect the pattern and return a dict
+    in the assembled shape ({"id","name","arguments"}) so route() can treat it
+    as a real call.  Returns None if the content does not look like a tool call.
+    """
+    if not content:
+        return None
+    stripped = content.strip()
+    if not stripped.startswith("{"):
+        return None
+    try:
+        obj = json.loads(stripped)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(obj, dict):
+        return None
+    name = obj.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+    arguments = obj.get("arguments") or obj.get("parameters") or {}
+    if isinstance(arguments, dict):
+        arguments = json.dumps(arguments, separators=(",", ":"))
+    elif not isinstance(arguments, str):
+        arguments = "{}"
+    return {"id": "", "name": name, "arguments": arguments}

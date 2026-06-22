@@ -46,7 +46,9 @@ The confirm / typed-word prompts and the rendering are also injected
 from __future__ import annotations
 
 import json
+import re
 import sys
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, Protocol
 
@@ -62,6 +64,70 @@ from core.tools import ToolRegistry, ToolResult
 # --------------------------------------------------------------------------- #
 # IO seam (so tests drive prompts/rendering deterministically)                 #
 # --------------------------------------------------------------------------- #
+
+# Strip ANSI/VT escape sequences from captured command output before display
+# (OpenCode does the same via stripAnsi — raw stdout may carry color codes).
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+# Cap raw command output so a `cat` of a huge file does not flood the screen.
+_MAX_OUTPUT_LINES = 60
+
+# --- Tool-block presentation (ports OpenCode's BlockTool: a left-gutter panel
+#     with a muted title line = the command, a spinner while it runs, then the
+#     real output below the same gutter). Plain ANSI so it works in any tty. ---
+_DIM = "\x1b[2m"
+_GRAY = "\x1b[90m"
+_GREEN = "\x1b[32m"
+_RED = "\x1b[31m"
+_AMBER = "\x1b[33m"
+_RESET = "\x1b[0m"
+_CLEAR_LINE = "\r\x1b[2K"
+_GUTTER = "\x1b[90m│\x1b[0m"            # dim vertical bar, the block's left edge
+# Braille spinner frames (same family OpenCode/Claude Code use).
+_SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+_SPINNER_DELAY = 0.15                    # don't paint for fast ops (no flash)
+_SPINNER_INTERVAL = 0.08
+
+
+# A trailing offer of MORE interaction ("Would you like more detail?", "Let me
+# know if...", "Want me to..."). Narrow on purpose: it must NOT eat genuine
+# sysadmin advice like "If you need to change it, edit sshd_config." — only
+# clauses that offer further help/output from the system itself.
+_CHATBOT_TRAILER = re.compile(
+    r"(?:\n+|(?<=[.!?])\s+)"
+    r"(?:would you like|do you want|did you want|let me know|feel free|"
+    r"if you(?:'d| would) (?:like|prefer|want)|"
+    r"want me to|shall i|should i (?:provide|show|give|list|summarize|elaborate)|"
+    r"is there (?:anything|something)(?:\s+else)?)"
+    r"\b[^\n]*?[?.]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _strip_markdown(text: str) -> str:
+    """Remove markdown formatting from terminal output.
+
+    The model may emit markdown regardless of instructions.  Strip it at
+    render time so the terminal always sees plain text (I2-adjacent: no
+    document-renderer artifacts in a raw terminal).
+    """
+    # Triple-backtick fences: drop the fence line, keep content inside
+    text = re.sub(r"```[^\n]*\n?", "", text)
+    # Inline backticks: keep the content, drop the backticks
+    text = re.sub(r"`([^`\n]+)`", r"\1", text)
+    # Bullet / list markers at the start of a line
+    text = re.sub(r"(?m)^[ \t]*[-*]\s+", "", text)
+    # Markdown headers
+    text = re.sub(r"(?m)^#+\s+", "", text)
+    # Bold and italic markers
+    text = re.sub(r"\*\*([^*\n]+)\*\*", r"\1", text)
+    text = re.sub(r"\*([^*\n]+)\*", r"\1", text)
+    # Chatbot closings ("let me know", "feel free", etc.)
+    text = _CHATBOT_TRAILER.sub("", text)
+    # Collapse 3+ blank lines
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
 
 class ReplIO(Protocol):
     """Everything the loop needs from the terminal. Injected for tests.
@@ -86,9 +152,11 @@ class ReplIO(Protocol):
     def confirm_typed(self, prompt: str, word: str) -> bool: ...
 
     # Optional (no-op default in callers; ConsoleIO implements render_delta).
+    def begin_turn(self) -> None: ...               # reset per-turn display state
     def render_delta(self, token: str) -> None: ...
     def tool_step(self, text: str) -> None: ...
     def tool_step_result(self, text: str) -> None: ...
+    def tool_output(self, text: str) -> None: ...   # raw read stdout, verbatim
 
 
 class ConsoleIO:
@@ -107,10 +175,24 @@ class ConsoleIO:
         # Accumulates content already emitted token-by-token this turn so
         # render() knows not to re-print it.  Empty -> buffered path.
         self._streamed = ""
-        # Presentation state for pretty, in-place tool steps (reset each turn).
-        self._pending_cmd = ""       # command on the currently-open "running" line
-        self._had_tool_step = False  # a step ran this turn -> breathe before answer
-        self._answer_open = False    # the streamed answer has begun this turn
+        # Presentation state for tool steps (reset each turn).
+        self._pending_cmd = ""           # command for the in-flight step
+        self._had_tool_step = False      # a step ran this turn -> breathe before answer
+        self._answer_open = False        # the streamed answer has begun this turn
+        self._pending_confirmed = False  # True after a granted confirm (write op)
+        self._header_open = False        # an unterminated block-title line is on screen
+        self._block_shown = False        # a tool block was already rendered this turn
+        self._spin_stop: Optional[threading.Event] = None
+        self._spin_thread: Optional[threading.Thread] = None
+
+    def begin_turn(self) -> None:
+        """Reset per-turn display state. Called once at the top of each turn so
+        block separation and answer spacing never leak across turns (robust even
+        when the final answer is suppressed and render() is not called)."""
+        self._had_tool_step = False
+        self._answer_open = False
+        self._block_shown = False
+        self._streamed = ""
 
     @staticmethod
     def _isatty() -> bool:
@@ -120,67 +202,159 @@ class ConsoleIO:
             return False
 
     def render_delta(self, token: str) -> None:
+        # Buffer the token; render() prints the full stripped response once
+        # streaming completes.  This defers display until we can strip markdown
+        # from the whole response rather than printing raw tokens as they arrive.
         if not token:
             return
-        # Breathing room: one blank line between the tool steps and the answer,
-        # only when a step actually ran this turn (answer-only turns unchanged).
-        if self._had_tool_step and not self._answer_open:
-            print()
         self._answer_open = True
         self._streamed += token
-        print(token, end="", flush=True)
 
     def tool_step(self, text: str) -> None:
-        # Shown just before a gate-cleared op runs. The text is "running: <cmd>";
-        # we render a dim, indented step that RESOLVES IN PLACE (tty) once the
-        # result lands — one clean line per operation, Claude Code-style.
+        """Open a tool block: a left-gutter title line carrying the command.
+
+        Ports OpenCode's BlockTool title (a muted line, the command) plus its
+        running-spinner. On a tty the line is left OPEN so the spinner can
+        animate in place and the result resolves it cleanly; off a tty it is a
+        plain one-shot line.
+        """
         if not text:
             return
         cmd = text[len("running: "):] if text.startswith("running: ") else text
         self._pending_cmd = cmd
         self._had_tool_step = True
-        line = f"\x1b[2m  ⏵ {cmd}\x1b[0m"
+        # Write ops (gate already confirmed): no block; the ✓ line stands alone.
+        if self._pending_confirmed:
+            return
+        # Separate consecutive tool blocks with a blank line (BlockTool margin).
+        if self._block_shown:
+            print()
+        self._block_shown = True
+        # Read ops: open the block with its title = the command.
         if self._isatty():
-            print(line, end="", flush=True)   # leave open; resolve in place
+            sys.stdout.write(f"{_GUTTER} {_DIM}{cmd}{_RESET}")
+            sys.stdout.flush()
+            self._header_open = True
+            self._start_spinner(cmd)
         else:
-            print(line, flush=True)
+            print(f"{_GUTTER} {cmd}", flush=True)
 
     def tool_step_result(self, text: str) -> None:
-        # Resolve the open step line with a status glyph: ✔ done (dim),
-        # ✘ + reason (red) on failure, ⊘ for a gated/declined op.
         status = (text or "").strip()
+        self._stop_spinner()
         cmd = self._pending_cmd
         self._pending_cmd = ""
+        confirmed = self._pending_confirmed
+        self._pending_confirmed = False
         low = status.lower()
-        if low in ("done", "exit 0", "ok", ""):
-            glyph, color, suffix = "✔", "\x1b[2m", ""
-        elif cmd and (low.startswith("exit") or "error" in low or "could not" in low):
-            glyph, color, suffix = "✘", "\x1b[31m", f" · {status}"
-        else:
-            glyph, color, suffix = "⊘", "\x1b[2m", (f" · {status}" if status else "")
-        resolved = f"{color}  {glyph} {cmd}{suffix}\x1b[0m"
-        if self._isatty() and cmd:
-            print("\r\x1b[2K" + resolved, flush=True)   # overwrite the open line
-        else:
-            print(resolved, flush=True)
+
+        # Resolve any open block-title line to a clean, spinner-free state.
+        if self._header_open:
+            sys.stdout.write(f"{_CLEAR_LINE}{_GUTTER} {_DIM}{cmd}{_RESET}\n")
+            sys.stdout.flush()
+            self._header_open = False
+
+        # Declined / not run: nothing — the user already saw the [y/N] prompt.
+        if low in ("not run", ""):
+            return
+
+        # Error: red, inside the block for a read; standalone for a write.
+        if (low.startswith("exit") and low != "exit 0") or "error" in low or "could not" in low:
+            if cmd and confirmed:
+                print(f"{_RED}✗ {cmd} · {status}{_RESET}", flush=True)
+            elif cmd:
+                print(f"{_GUTTER} {_RED}✗ {status}{_RESET}", flush=True)
+            return
+
+        # Success: a confirmed write gets a green ✓ line (no block, matches the
+        # marketing demo). A read's success is shown by its output block below.
+        if confirmed and cmd:
+            print(f"{_GREEN}✓ {cmd}{_RESET}", flush=True)
+
+    def tool_output(self, text: str) -> None:
+        """Render a read op's RAW stdout verbatim under the block gutter — the
+        way Claude Code and OpenCode show command output: the real bytes, never
+        a re-typed summary.
+
+        ANSI escapes are stripped (OpenCode does the same via stripAnsi). Very
+        long output is capped with a trailing note so a `cat` of a huge file
+        does not flood the terminal.
+        """
+        if not text:
+            return
+        clean = _ANSI_ESCAPE.sub("", text).rstrip("\n")
+        if not clean:
+            return
+        lines = clean.split("\n")
+        shown, hidden = lines[:_MAX_OUTPUT_LINES], len(lines) - _MAX_OUTPUT_LINES
+        # Blank gutter row separates the title from the output (BlockTool gap).
+        out = [_GUTTER]
+        out += [f"{_GUTTER} {line}" for line in shown]
+        if hidden > 0:
+            plural = "s" if hidden != 1 else ""
+            out.append(f"{_GUTTER} {_GRAY}… {hidden} more line{plural}{_RESET}")
+        print("\n".join(out), flush=True)
+
+    # ---- running spinner (ports OpenCode's BlockTool spinner) -------------- #
+
+    def _start_spinner(self, cmd: str) -> None:
+        """Animate a spinner on the open title line, after a short delay so a
+        fast read never flashes. Runs in a daemon thread; only the thread writes
+        to stdout between tool_step and tool_step_result (which joins it)."""
+        if not self._isatty():
+            return
+        stop = threading.Event()
+        self._spin_stop = stop
+
+        def _run() -> None:
+            # Delay first paint: if the op finishes within the delay, the spinner
+            # never appears (no flash on instant reads).
+            if stop.wait(_SPINNER_DELAY):
+                return
+            i = 0
+            while not stop.is_set():
+                frame = _SPINNER_FRAMES[i % len(_SPINNER_FRAMES)]
+                try:
+                    sys.stdout.write(f"{_CLEAR_LINE}{_GUTTER} {_GRAY}{frame}{_RESET} {_DIM}{cmd}{_RESET}")
+                    sys.stdout.flush()
+                except Exception:  # noqa: BLE001 — a write race never breaks a turn
+                    return
+                i += 1
+                if stop.wait(_SPINNER_INTERVAL):
+                    return
+
+        self._spin_thread = threading.Thread(target=_run, daemon=True)
+        self._spin_thread.start()
+
+    def _stop_spinner(self) -> None:
+        if self._spin_stop is not None:
+            self._spin_stop.set()
+        if self._spin_thread is not None:
+            self._spin_thread.join(timeout=0.3)
+        self._spin_stop = None
+        self._spin_thread = None
 
     def render(self, text: str) -> None:
-        # Reset per-turn presentation state (tool-step + answer flags).
+        had_step = self._had_tool_step
         self._had_tool_step = False
         self._answer_open = False
-        # If this exact text was already streamed token-by-token, do NOT
-        # re-print it: just close the line so the next prompt starts fresh.
+        # Streaming path: _streamed holds buffered tokens; use the authoritative
+        # assembled text when available, fall back to the buffer otherwise.
         if self._streamed:
-            already = self._streamed
+            to_print = text if text else self._streamed
             self._streamed = ""
-            if text == already or not text:
-                print()  # newline only — the tokens are already on screen
-                return
-            # Divergent buffered text after a partial stream: close the
-            # streamed line, then print the authoritative full answer.
+        else:
+            to_print = text
+        if not to_print:
             print()
-        if text:
-            print(text)
+            return
+        stripped = _strip_markdown(to_print)
+        if stripped:
+            if had_step:
+                print()  # breathing room between tool steps and the answer
+            print(stripped)
+        else:
+            print()
 
     def confirm(self, prompt: str) -> bool:
         if not self.interactive:
@@ -189,16 +363,23 @@ class ConsoleIO:
             ans = input(f"{prompt} [y/N] ").strip().lower()
         except EOFError:
             return False
-        return ans in ("y", "yes")
+        ok = ans in ("y", "yes")
+        if ok:
+            self._pending_confirmed = True
+        return ok
 
     def confirm_typed(self, prompt: str, word: str) -> bool:
         if not self.interactive:
             return False
+        print(f"\x1b[33m⚠  {prompt}\x1b[0m")
         try:
-            ans = input(f"{prompt} (type {word} to proceed) ")
+            ans = input(f"Type {word} to proceed: ")
         except EOFError:
             return False
-        return perm.confirms_destructive(ans)
+        ok = perm.confirms_destructive(ans)
+        if ok:
+            self._pending_confirmed = True
+        return ok
 
 
 # A responder turns (messages, tools) into an assembled model response.
@@ -225,6 +406,7 @@ class TurnOutcome:
     rounds: int = 0                    # model<->tool round trips taken
     ended_in_english: bool = False
     audit_records: int = 0             # ops recorded (I4)
+    read_output_shown: bool = False    # a read op's raw stdout was displayed
     history: list[dict] = field(default_factory=list)
 
 
@@ -566,6 +748,15 @@ class Repl:
         """
         outcome = TurnOutcome()
 
+        # Reset per-turn display state (block separation, answer spacing). Hook
+        # is optional + feature-detected, so non-ConsoleIO IOs are unaffected.
+        begin = getattr(self._io, "begin_turn", None)
+        if begin is not None:
+            try:
+                begin()
+            except Exception:  # noqa: BLE001 — display never breaks a turn
+                pass
+
         snapshot_text = self._context.snapshot_text()
         tools = self._advertised_tools()
         # P8 invisible memory: when a TranscriptMemory is wired, the `history`
@@ -609,7 +800,18 @@ class Repl:
                 # sink that raised partway and left render() in a bad state)
                 # must NEVER kill the turn or skip the memory/audit bookkeeping
                 # below (mirrors the _safe_emit wrap on the delta sink, P1).
-                self._safe_render(verdict.content)
+                #
+                # When we already showed the real command output for a read,
+                # a SMALL model tends to re-type that data as prose (lossily).
+                # Suppress that re-typing: keep only a TERSE insight (the way a
+                # diagnosis like "port conflict on :80" is kept, but a 16-line
+                # re-listing of `ls` is dropped — the user already has the real
+                # output above). Length is the discriminator: synthesis is
+                # short, a data echo is bulky.
+                if outcome.read_output_shown and self._is_data_echo(verdict.content):
+                    pass  # the real output above IS the answer
+                else:
+                    self._safe_render(verdict.content)
                 break
 
             if verdict.kind is TurnKind.MISS:
@@ -741,6 +943,14 @@ class Repl:
             # zero audit records and does not alter audit ordering.
             self._emit_tool_step_result(self._step_status(result))
 
+            # Show the REAL command output for a successful read, verbatim —
+            # the harness displays it, the model never re-types it (the Claude
+            # Code / OpenCode pattern). Reads only: a write's stdout is noise,
+            # and the ✓ line already reports the write. Display ONLY (SC4).
+            if decision.op_class is OpClass.READ and result.ok and result.stdout.strip():
+                if self._emit_tool_output(result.stdout):
+                    outcome.read_output_shown = True
+
             # I5: a successful mutation changes the box — invalidate context.
             if decision.op_class is not OpClass.READ and result.ok:
                 self._context.invalidate()
@@ -766,14 +976,12 @@ class Repl:
             return False, decision.reason
 
         if decision.gate is Gate.CONFIRM:
-            ok = self._io.confirm(f"Run this change? {decision.reason}.")
+            ok = self._io.confirm(command)
             return ok, ("confirmed" if ok else "declined")
 
         if decision.gate is Gate.CONFIRM_TYPED:
             word = decision.confirm_word or perm.DESTRUCTIVE_CONFIRM_WORD
-            ok = self._io.confirm_typed(
-                f"This cannot be undone: {decision.reason}.", word
-            )
+            ok = self._io.confirm_typed(decision.reason, word)
             return ok, ("confirmed (typed)" if ok else "declined")
 
         # Unknown gate -> default-deny.
@@ -824,6 +1032,39 @@ class Repl:
             hook(text)
         except Exception:  # noqa: BLE001 — display never breaks a turn
             pass
+
+    def _emit_tool_output(self, text: str) -> bool:
+        """Show raw read output. Returns True iff it was ACTUALLY displayed.
+
+        The return value gates answer-suppression: we only drop the model's
+        re-typing when the real output was genuinely shown. An IO without the
+        hook (or one that raised) returns False, so the model's answer is kept
+        and the user is never left with nothing.
+        """
+        hook = getattr(self._io, "tool_output", None)
+        if hook is None:
+            return False
+        try:
+            hook(text)
+            return True
+        except Exception:  # noqa: BLE001 — display never breaks a turn
+            return False
+
+    @staticmethod
+    def _is_data_echo(text: str) -> bool:
+        """True if the model's answer is a bulky re-typing of data already shown.
+
+        We display real read output ourselves; a frontier model would add a
+        terse insight, but a small model re-lists the data. Discriminate by
+        bulk: a genuine insight is short (a sentence or two); a data echo is
+        long or many-lined. Conservative — when in doubt, KEEP the answer
+        (only clearly-bulky text is suppressed).
+        """
+        stripped = (text or "").strip()
+        if not stripped:
+            return True  # nothing to add — the real output stands alone
+        lines = [ln for ln in stripped.splitlines() if ln.strip()]
+        return len(lines) > 3 or len(stripped) > 240
 
     @staticmethod
     def _step_status(result: ToolResult) -> str:
