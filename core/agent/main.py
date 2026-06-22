@@ -47,6 +47,25 @@ import core.tools.services  # noqa: E402,F401
 import core.tools.packages  # noqa: E402,F401
 import core.tools.logs  # noqa: E402,F401
 
+# Register the Phase 6 tools (self-register on import). Each import is a pure
+# side-effect: the module calls registry.register(...) at import time.
+import core.tools.network  # noqa: E402,F401
+import core.tools.firewall  # noqa: E402,F401
+import core.tools.users  # noqa: E402,F401
+import core.tools.disk  # noqa: E402,F401
+import core.tools.processes  # noqa: E402,F401
+import core.tools.hardware  # noqa: E402,F401
+import core.tools.files  # noqa: E402,F401
+
+# Register the docs (reference-lookup) tool. GUARDED: a missing/unreadable
+# corpus index must NOT crash build_repl — the tool degrades to empty-but-valid
+# results at call time, and even an import-time failure here is swallowed so the
+# loop still starts without the reference tool (I9).
+try:
+    import core.tools.docs  # noqa: E402,F401
+except Exception:  # noqa: BLE001 — docs is optional; absence must never crash startup.
+    pass
+
 
 # --------------------------------------------------------------------------- #
 # Configuration (env-driven; I6 — tier value is opaque to the framework)       #
@@ -66,6 +85,21 @@ _DEFAULT_BASE_URL = "http://localhost:11434"
 _DEFAULT_AUDIT_LOG = "/var/log/erdtree/audit.jsonl"
 
 
+def _int_env(name: str, default: int) -> int:
+    """Read an integer env knob OPAQUELY; any non-integer value -> default.
+
+    Never raises (I9): a malformed ERDTREE_* integer degrades to the safe
+    default rather than crashing config resolution / build_repl.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 @dataclass
 class AppConfig:
     """Resolved runtime configuration."""
@@ -76,6 +110,13 @@ class AppConfig:
     audit_log_path: str
     interactive: bool
     tier_prompt: str = ""
+    # P8 invisible-memory knobs (read OPAQUELY, exactly like ERDTREE_MODEL —
+    # I6).  All have safe defaults; absence -> the feature degrades OFF and
+    # build_repl never crashes (I9).
+    facts_path: str = ""             # ERDTREE_FACTS_PATH — "" -> no preamble.
+    corpus_index: str = ""           # ERDTREE_CORPUS_INDEX — "" -> docs/episodic off.
+    retrieval_k: int = 3             # ERDTREE_RETRIEVAL_K — per-tier recall budget.
+    compaction_threshold: int = 0    # ERDTREE_COMPACTION_THRESHOLD — 0 -> no cap.
 
     @classmethod
     def from_env(cls, *, interactive: bool = True) -> "AppConfig":
@@ -91,6 +132,10 @@ class AppConfig:
             audit_log_path=audit_log_path,
             interactive=interactive,
             tier_prompt=os.environ.get("ERDTREE_TIER_PROMPT", "").strip(),
+            facts_path=os.environ.get("ERDTREE_FACTS_PATH", "").strip(),
+            corpus_index=os.environ.get("ERDTREE_CORPUS_INDEX", "").strip(),
+            retrieval_k=_int_env("ERDTREE_RETRIEVAL_K", 3),
+            compaction_threshold=_int_env("ERDTREE_COMPACTION_THRESHOLD", 0),
         )
 
 
@@ -137,7 +182,18 @@ def build_repl(config: AppConfig) -> Repl:
 
     audit_path = _resolve_audit_path(config.audit_log_path)
     audit = AuditLog(audit_path)
-    context = TurnContext()
+
+    # P8 invisible memory.  EVERY piece below is OPTIONAL and degrades OFF on
+    # absence/error — build_repl must never crash on a missing facts file,
+    # absent corpus index, or unbuildable episodic index (I9).
+    #   * facts preamble  -> threaded through TurnContext.snapshot_text (I5).
+    #   * TranscriptMemory -> silent rolling compaction of the prior-turn window.
+    #   * EpisodicMemory   -> past-operation recall (reuses the P7 rag engine
+    #                         pointed at an index DERIVED from the audit log; a
+    #                         DIFFERENT path from the docs corpus index).
+    context = _build_context(config)
+    memory = _build_memory()
+    episodic = _build_episodic(config, audit_path)
 
     return Repl(
         registry=registry,
@@ -148,7 +204,65 @@ def build_repl(config: AppConfig) -> Repl:
         tier_label=config.tier,
         tier_prompt=config.tier_prompt,
         interactive=config.interactive,
+        memory=memory,
+        episodic=episodic,
+        compaction_threshold=config.compaction_threshold,
     )
+
+
+def _build_context(config: AppConfig) -> TurnContext:
+    """Build the TurnContext, wiring the per-host facts preamble when configured.
+
+    Absent/empty ERDTREE_FACTS_PATH -> no FactsLoader -> snapshot_text output is
+    byte-identical to the pre-P8 path (I9 backward-compatible default).  A
+    construction failure degrades to a plain TurnContext (no preamble).
+    """
+    try:
+        if config.facts_path:
+            from core.context.facts import FactsLoader
+
+            return TurnContext(facts=FactsLoader(config.facts_path))
+    except Exception:  # noqa: BLE001 — facts are optional; never crash startup.
+        pass
+    return TurnContext()
+
+
+def _build_memory():
+    """Construct the TranscriptMemory (invisible rolling compaction).
+
+    Always-on once available, since it is pure stdlib byte-counting with no
+    external dependency and an empty transcript is a harmless no-op.  Any import
+    failure degrades to None -> the loop keeps history=[] (pre-P8 behavior, I9).
+    """
+    try:
+        from core.agent.memory import TranscriptMemory
+
+        return TranscriptMemory()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _build_episodic(config: AppConfig, audit_path: str):
+    """Construct the EpisodicMemory over the audit log, when usable.
+
+    The episodic index path is DERIVED from the audit log path (a sibling file)
+    and is DIFFERENT from the docs corpus index (ERDTREE_CORPUS_INDEX) — that
+    difference is the reuse-not-fork property.  Any failure -> None (I9); the
+    loop simply has no past-operation recall and continues.
+    """
+    try:
+        from pathlib import Path as _Path
+
+        from core.agent.episodic import EpisodicMemory
+
+        index_path = str(_Path(audit_path).with_name("episodic.db"))
+        return EpisodicMemory(
+            audit_path=audit_path,
+            index_path=index_path,
+            k=config.retrieval_k,
+        )
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # --------------------------------------------------------------------------- #

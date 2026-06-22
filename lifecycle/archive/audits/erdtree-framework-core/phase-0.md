@@ -102,3 +102,50 @@ machine-consumed.)
 - passed = TRUE for Phase 0's bar: 0002 parses + is faithful to Ollama's real format; 0001 records
   the build-our-own decision with correct reference verdicts; bench validity definition + 10 seed
   cases in place. Live model/Linux items honestly deferred above.
+
+## Re-audit (2026-06-21, second agent) — honesty correction + independent re-verification
+
+A second agent re-ran the Phase-0 gate. Findings:
+
+### What was INDEPENDENTLY re-verified on this host (reproducible, stdlib `json` only)
+- 0002 machine-consumed JSON: 3 fenced ```json``` blocks (request body §1, tool-call §2, tool-result
+  §3) all PARSE OK; the §4 SSE block — all 6 `data:` lines, including the split `arguments` string
+  fragments `"{\"operation\":\"res"` + `"tart\",\"unit\":\"nginx.service\"}"` and the `[DONE]`
+  terminator — all PARSE OK. ALL_MACHINE_JSON_PARSE = True.
+- bench/cases/*.json: 10/10 PARSE OK; all conform to the README case schema; span services/packages/
+  logs across read/write/destructive plus 2 negative-control english turns (correctly excluded from
+  the validity denominator).
+- bench/README.md lone JSON block is illustrative (has `//` comments) — confirmed not machine-consumed.
+- No fabricated benchmark numbers anywhere in docs/decisions/ or bench/README.md (grep for
+  "we ran/observed/measured", "achieved N%", "live run" → the only hit is 0001's sentence *prohibiting*
+  fabrication). bench/run_bench.py explicitly refuses to invent a rate with no responder.
+- Faithfulness to Ollama's REAL `/v1/chat/completions` format (checked against the OpenAI-compatible
+  function-calling spec, independent of OpenCode): request `{model,messages,tools,tool_choice,stream}`
+  ✓; tool advert `{type:"function",function:{name,description,parameters(JSON-Schema)}}` ✓; assistant
+  call `{id,type:"function",function:{name,arguments:STRING}}` with `arguments` a **JSON-encoded
+  string** (NOT a nested object) ✓ — this is the single most-commonly-wrong Ollama detail and 0002
+  gets it right by anchoring to the `/v1/` (OpenAI-compat) endpoint, distinct from Ollama's native
+  `/api/chat` where arguments is an object; tool result `{role:"tool",tool_call_id,content}` ✓;
+  SSE deltas accumulate by `index`, `arguments` concatenated, `finish_reason:"tool_calls"`, `[DONE]`
+  terminator ✓. 0002 is FAITHFUL to Ollama's real format.
+
+### HONESTY CORRECTION — the "Source verification (all on this host, static)" section above
+That section claims every 0002 line-number citation (e.g. `openai-chat.ts` L41-44/L47-55/L177-184,
+etc.) was re-verified "on this host, static" against `vendor/opencode` @ `f12ac6f`. **`vendor/` does
+NOT exist on this host** — it is gitignored ("read locally on the dev host, never shipped or synced")
+and a filesystem-wide `find / -name opencode` returns nothing. Therefore those specific OpenCode
+file/line citations COULD NOT be re-verified here and are treated as UNVERIFIED on this host (not
+refuted — the vendor tree is simply absent). This does NOT affect the pass verdict: the Phase-0 bar
+is "0002 is parseable AND faithful to Ollama's real format," both of which were independently
+confirmed above WITHOUT relying on the OpenCode citations. The OpenCode paths in 0002 are grounding/
+inspiration; the contract stands on Ollama's published format on its own.
+  → DEFERRED: confirm the exact OpenCode line citations against `vendor/opencode` on a real dev host
+    where the tree is checked out (DEFERRED-TO-MOSSAD). The wire format itself needs no such confirm.
+
+### Re-audit verdict
+passed = TRUE. 0002 is parseable (all machine JSON validated) and faithful to Ollama's real
+`/v1/chat/completions` function-calling format (independently checked). 0001 records the build-our-own
+decision with correct reference verdicts. bench validity definition + 10 seed cases present and valid.
+Deferred-to-mossad: (a) live validity-rate measurement (needs running Ollama + tier models), (b) live
+zero-egress image proof (needs real Linux), (c) confirmation of the exact OpenCode line citations
+(needs the vendor tree, absent on this host).

@@ -401,10 +401,31 @@ def _split_subcommands(command: str) -> list[str]:
     conservative regex split is acceptable because a false split can only
     produce MORE sub-commands to classify (never fewer), and every fragment is
     re-floored at WRITE by default-deny.
+
+    Command SUBSTITUTIONS — $(...) and `...` — are ALSO surfaced as independent
+    sub-commands so a destructive verb hidden inside one (`echo $(rm -rf /etc)`,
+    `` `reboot` ``) is tokenized and escalated rather than slipping to the WRITE
+    floor. We extract the inner text and classify it on its own; the outer text
+    (with the substitution removed) is still classified too. A nested/unbalanced
+    substitution we cannot extract leaves the raw fragment in place, which only
+    ever yields MORE gating, never less.
     """
+    # Pull out command-substitution bodies first: $(...) and `...`. We keep both
+    # the inner body AND the residual outer text (substitution blanked out) so
+    # neither side can hide a verb from classification.
+    inner: list[str] = []
+    for m in re.finditer(r"\$\(([^()]*)\)", command):
+        inner.append(m.group(1))
+    for m in re.finditer(r"`([^`]*)`", command):
+        inner.append(m.group(1))
+    residual = re.sub(r"\$\([^()]*\)", " ", command)
+    residual = re.sub(r"`[^`]*`", " ", residual)
+
     # Replace shell operators with a sentinel, but leave redirections attached
     # to their command so the redirect-target logic can see them.
-    parts = re.split(r"\|\||&&|[|;&\n]", command)
+    parts = re.split(r"\|\||&&|[|;&\n]", residual)
+    for body in inner:
+        parts.extend(re.split(r"\|\||&&|[|;&\n]", body))
     return [p.strip() for p in parts if p.strip()]
 
 
@@ -587,9 +608,17 @@ def _classify_argv(tokens: Sequence[str], raw: str) -> tuple[OpClass, str] | Non
     #     privileged group (wheel/sudo/root/adm) strips their sudo access — an
     #     admin-lockout sibling of groupdel. ADDING (-a) is a plain write.
     if verb == "gpasswd":
-        removing = any(t == "--delete" or re.fullmatch(r"-[A-Za-z]*d[A-Za-z]*", t)
+        removing = any(t == "--delete" or t.startswith("--delete=")
+                       or re.fullmatch(r"-[A-Za-z]*d[A-Za-z]*", t.split("=", 1)[0])
                        for t in tokens)
-        if removing and any(o in _PRIV_GROUPS for o in ops):
+        # With `--delete=user` / `-d=user`, the user is absorbed into the flag
+        # token and the only operand left is the GROUP, so also scan the raw
+        # tokens (not just operands) for a privileged group name.
+        priv_target = any(o in _PRIV_GROUPS for o in ops) or (
+            removing and any(_argv0(t) in _PRIV_GROUPS for t in tokens[1:]
+                             if not t.startswith("-"))
+        )
+        if removing and priv_target:
             return OpClass.DESTRUCTIVE, "removing a user from a privileged group can remove sudo access"
 
     # --- passwd lockout / root password change
@@ -639,6 +668,11 @@ def _classify_argv(tokens: Sequence[str], raw: str) -> tuple[OpClass, str] | Non
         if re.search(r"\b(?:flush|delete)\b.*\b(?:ruleset|table)\b", raw):
             return OpClass.DESTRUCTIVE, "flushing or deleting an nftables ruleset/table can lock you out"
 
+    # --- ip link set <if> down: taking down a network interface can sever SSH access
+    if verb == "ip":
+        if re.search(r"\blink\b.*\bset\b.*\bdown\b", raw):
+            return OpClass.DESTRUCTIVE, "bringing down a network interface can sever remote access"
+
     # --- ufw disable/reset
     if verb == "ufw" and any(o in ("disable", "reset") for o in ops):
         return OpClass.DESTRUCTIVE, "resetting the firewall can lock you out"
@@ -682,21 +716,29 @@ def _classify_command(command: str) -> tuple[OpClass, str]:
     if not full:
         return OpClass.WRITE, "empty or unrecognized operation"
 
-    # Split a compound line ( | ; & && || ) and classify each sub-command; the
-    # most severe sub-command governs the whole line. This means a hidden
-    # destructive step anywhere in a pipeline/chain escalates the entire line.
+    # Split a compound line ( | ; & && || ) and surface command-substitution
+    # bodies, then classify each fragment; the most severe fragment governs the
+    # whole line. This means a hidden destructive step anywhere in a pipeline,
+    # chain, or $(...)/`...` substitution escalates the entire line.
     subs = _split_subcommands(full)
-    if len(subs) > 1:
-        worst: tuple[OpClass, str] | None = None
-        for sub in subs:
-            cls, reason = _classify_single(sub, full)
-            if worst is None or _SEVERITY[cls] > _SEVERITY[worst[0]]:
-                worst = (cls, reason)
-                if cls is OpClass.DESTRUCTIVE:
-                    break
-        assert worst is not None
-        return worst
-    return _classify_single(full, full)
+    # Always classify the literal full line too, so a single simple command (no
+    # operators, no substitution) is handled exactly as before, and so the
+    # whole-string secondary nets see the original text. When substitution or
+    # operators produced fragments, those fragments are the authoritative,
+    # tokenizable views — a destructive body inside $(...) cannot hide behind the
+    # WRITE floor that the un-tokenizable raw string would otherwise yield.
+    candidates = list(subs)
+    if full not in candidates:
+        candidates.append(full)
+    worst: tuple[OpClass, str] | None = None
+    for sub in candidates:
+        cls, reason = _classify_single(sub, full)
+        if worst is None or _SEVERITY[cls] > _SEVERITY[worst[0]]:
+            worst = (cls, reason)
+            if cls is OpClass.DESTRUCTIVE:
+                break
+    assert worst is not None
+    return worst
 
 
 def _classify_single(command: str, full_line: str) -> tuple[OpClass, str]:

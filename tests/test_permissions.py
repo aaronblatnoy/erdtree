@@ -333,6 +333,27 @@ DESTRUCTIVE_CORPUS = [
     "watch -n 1 systemctl reboot",
     "stdbuf -o0 rm -rf /etc",
     "sudo env FOO=1 rm -Rf /var",
+
+    # ROUND-2 HARDENING: command-substitution evasion. A destructive verb hidden
+    # inside $(...) or `...` previously slipped to the WRITE floor because the
+    # substitution body was never tokenized. The body MUST be surfaced and
+    # escalated. (Outer benign text like `echo`/`x=` must not mask the inner op.)
+    "$(rm -rf /etc)",
+    "`reboot`",
+    "echo $(rm -rf /home)",
+    "echo `mkfs.ext4 /dev/sdb`",
+    "foo `rm -rf /var`",
+    "x=$(mkfs.ext4 /dev/sdb)",
+    "result=$(dd if=/dev/zero of=/dev/sda)",
+    "echo $(systemctl poweroff)",
+    "log $(userdel -r admin)",
+
+    # ROUND-2: gpasswd --delete=user / -d=user form (user absorbed into the flag
+    # token, leaving only the privileged GROUP as an operand). Removing a user
+    # from wheel/sudo/adm strips sudo — an admin lockout that previously slipped.
+    "gpasswd --delete=admin wheel",
+    "gpasswd -d=admin sudo",
+    "gpasswd --delete=operator adm",
 ]
 
 
@@ -492,6 +513,22 @@ def test_sudo_prefix_does_not_hide_destructive():
 
 def test_env_prefix_does_not_hide_destructive():
     assert classify("FOO=bar mkfs.ext4 /dev/sdb1").op_class is OpClass.DESTRUCTIVE
+
+
+def test_command_substitution_does_not_hide_destructive():
+    # A destructive verb inside $(...) or `...` must be tokenized and escalated,
+    # not slip to the WRITE floor.
+    for cmd in ("$(rm -rf /etc)", "`reboot`", "echo $(rm -rf /home)",
+                "echo `mkfs.ext4 /dev/sdb`"):
+        assert classify(cmd).op_class is OpClass.DESTRUCTIVE, cmd
+
+
+def test_benign_command_substitution_is_not_over_escalated():
+    # Surfacing substitution bodies must not flag a read substitution as
+    # destructive. A pure read body stays READ; a VAR= assignment floors at WRITE.
+    assert classify("echo $(date)").op_class is OpClass.READ
+    assert classify("echo `hostname`").op_class is OpClass.READ
+    assert classify("files=$(ls /tmp)").op_class in (OpClass.WRITE,)
 
 
 # ---------------------------------------------------------------------------

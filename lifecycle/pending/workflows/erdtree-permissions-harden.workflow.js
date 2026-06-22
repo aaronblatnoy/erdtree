@@ -12,7 +12,7 @@ export const meta = {
   ],
 };
 
-const REPO = '/Users/aaron_7nh0yzm/erdtree';
+const REPO = '/home/aaron/erdtree';
 const FILE = 'core/agent/permissions.py';
 const TEST = 'tests/test_permissions.py';
 

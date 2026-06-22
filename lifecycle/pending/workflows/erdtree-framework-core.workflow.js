@@ -23,7 +23,7 @@ export const meta = {
   ],
 };
 
-const REPO = '/Users/aaron_7nh0yzm/erdtree';
+const REPO = '/home/aaron/erdtree';
 const PLAN = REPO + '/lifecycle/pending/plans/erdtree-v0.1-buildout.txt';
 const CLAUDE_MD = REPO + '/CLAUDE.md';
 const AUDIT_DIR = REPO + '/lifecycle/archive/audits/erdtree-framework-core';

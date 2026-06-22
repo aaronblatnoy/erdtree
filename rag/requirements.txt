@@ -1,0 +1,21 @@
+# rag/ ONLY — the core agent imports NONE of these at runtime. When this file's
+# deps and a built index are both absent, the docs tool degrades OFF safely (I9)
+# and the core loop has zero new runtime dependencies.
+#
+# Pinned for v0.1. Two roles:
+#   1. Vector index backend (REQUIRED to build/query any index, incl. fixtures).
+#   2. Production passage embedder (REQUIRED only for the FULL corpus embed,
+#      which is DEFERRED-TO-MOSSAD/GPU; the fixture + tests use the pure-stdlib
+#      hashed embedder in rag/embed.py and need NONE of the embedder deps).
+
+# --- Vector index backend (chosen in P7 Step 1; see docs/decisions/0003) ---
+# Single-file, server-less sqlite extension (~160 KiB vec0.so). ISO-friendly,
+# reusable by P8 episodic. Verified loadable on this Linux host, Python 3.14.
+sqlite-vec==0.1.9
+
+# --- Production embedder (FULL corpus build only; mossad GPU, offline once
+#     weights are cached). NOT needed for fixtures or for test_rag_retrieve. ---
+# A small, CPU-capable local sentence embedder; no second large reranker model
+# ships (lexical+score rerank is used instead — I8). Pinned for reproducibility.
+sentence-transformers==3.0.1
+torch==2.3.1

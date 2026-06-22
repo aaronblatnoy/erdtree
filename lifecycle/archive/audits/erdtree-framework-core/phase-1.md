@@ -93,6 +93,12 @@ permission_decision, exit_code, stdout_summary, stderr_summary, result
 ## Test results
 
 ```
+28 passed in 0.05s  (Python 3.14.6, pytest-9.1.1, Linux Arch 7.0.12-arch1-1)
+```
+
+**Re-verified 2026-06-21 on Linux dev host:** same 28 tests, 0 failures, 0 deferred.
+Original result from macOS dev host also recorded below for reference:
+```
 28 passed in 0.12s  (Python 3.13.13, pytest 9.0.3, macOS Darwin 24.5.0)
 ```
 
@@ -199,3 +205,75 @@ network involved. (Wiring `classify()` into audit.py + tool execute() is Phase 2
 interactive prompt that consumes `confirm_word` is Phase 4.)
 
 **passed=true: code complete + 427 unit tests green; nothing fabricated; no live items deferred in this slice.**
+
+---
+
+# Permissions slice — ROUND-2 adversarial pass (this run)
+
+**Slice:** `core/agent/permissions.py` + `tests/test_permissions.py` (only these two files touched).
+**Date:** 2026-06-21. **Host:** macOS dev host (no Ollama/GPU/Linux). **Agent:** claude-opus-4-8[1m].
+Pure logic — fully testable here; nothing deferred for this slice.
+
+The implementation already existed and was green; this pass re-ran it under a fresh
+adversarial "find a destructive op that slips the gate" review and HARDENED it.
+
+## Gate-slips FOUND and FIXED
+
+1. **Command-substitution evasion (serious).** `$(rm -rf /etc)`, `` `reboot` ``,
+   `echo $(rm -rf /home)`, `x=$(mkfs.ext4 /dev/sdb)` all classified as **WRITE** —
+   the substitution body was never tokenized, so the destructive verb fell through
+   to the WRITE floor and BYPASSED the typed-word gate (it still prompted / refused
+   non-interactive, but violated the DESTRUCTIVE contract). FIX: `_split_subcommands`
+   now extracts `$(...)` and `` `...` `` bodies as independent sub-commands and also
+   classifies the residual outer skeleton; `_classify_command` always evaluates the
+   full line plus every fragment and takes the most severe. Nested
+   `$(echo $(rm -rf /etc))` escalates too. Benign substitutions stay correct:
+   `echo $(date)` / `echo \`hostname\`` remain READ.
+2. **`gpasswd --delete=user privgroup` / `-d=user`.** The `=user` form absorbed the
+   user into the flag token, leaving only the privileged group as an operand, so the
+   removing-flag check missed it and an admin-lockout (removal from wheel/sudo/adm)
+   slipped to WRITE. FIX: detect `--delete=`/`-d=` forms and scan raw tokens for a
+   privileged group.
+
+Both fixes added to the curated DESTRUCTIVE corpus as permanent regressions, plus
+two dedicated guard tests (`test_command_substitution_does_not_hide_destructive`,
+`test_benign_command_substitution_is_not_over_escalated`).
+
+## Known static-analysis boundaries (correctly floor at WRITE — never auto-run)
+
+Verbs hidden inside opaque arguments / unresolvable variables cannot be statically
+tokenized, so they floor at WRITE by default-deny (confirm prompt; REFUSE
+non-interactive; never silent auto-execute): `eval '...'`, `bash -c '...'` /
+`sh -c "..."`, `RM=rm; $RM -rf /`. This is the safe failure mode and is documented
+honestly rather than claimed as destructive coverage; refusing opaque `-c`/`eval`
+strings belongs to the runtime executor (later phase), not this pure classifier.
+
+## Keystone proof — re-run this pass
+
+Across the full DESTRUCTIVE corpus (167 entries) × every ExecContext
+(interactive/non-interactive × remote/local): every op is DESTRUCTIVE, none is
+`auto_ok`/auto-confirmable, every non-interactive gate is REFUSE, every interactive
+gate is CONFIRM_TYPED. Printed result: **`keystone leaks: 0 over 167 corpus entries`**.
+`confirms_destructive("")` is False; only trimmed `DESTROY` clears the gate.
+
+## Test results (real run, this host)
+
+```
+857 passed in 0.50s   (python -m pytest tests/test_permissions.py -q, Python 3.13, macOS)
+```
+(Corpus grew with the Round-2 regressions; the keystone whole-corpus assertion and
+all prior coverage remain green.)
+
+## Invariants — re-verified
+| Invariant | Status |
+|---|---|
+| I3 — destructive gated+typed, never auto, refused non-interactive | VERIFIED (0 leaks over 167×4 contexts) |
+| I2 — no AI/LLM/agent/model language in any human-facing `reason` | VERIFIED by source inspection |
+| I6 — no tier/product name in module or tests | VERIFIED (grep marika/radagon/radahn/starscourge => none) |
+| I8 — read path instant | 857-case suite in ~0.5s |
+
+## Deferred
+None for this slice — pure logic, fully exercised on the dev host. No live model /
+Linux / network involved.
+
+**passed=true: code complete + 857 unit tests green; 2 real gate-slips found and fixed; keystone proven with 0 leaks; nothing fabricated; no live items deferred in this slice.**

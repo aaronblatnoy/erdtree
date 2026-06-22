@@ -1,0 +1,883 @@
+=====================================================================
+BUILDOUT PHASE PLAN: Erdtree v0.1 — P6 (remaining tools) + P7 (RAG-as-tool)
+                      + P8 (invisible memory / compaction)
+Generated: 2026-06-21
+Scope: Round out the sysadmin toolset (7 tools + registry/classifier wiring),
+       add local-only retrieval as a tool the loop CALLS on demand, and make
+       the session immortal (rolling compaction + per-host facts + episodic
+       RAG-over-the-audit-log) — all on top of the verified P0–P5 core.
+Supersedes: §3 Phases 6/7/8 of
+       /home/aaron/erdtree/lifecycle/pending/plans/erdtree-v0.1-buildout.txt
+       (the original spec). This plan REPLACES those three phase bodies and
+       accounts for everything P0–P5 actually built. Phases 9–11 of the
+       original plan are unchanged and out of scope here.
+=====================================================================
+
+## 0. CONTEXT & GOALS
+
+Problem statement
+  P0–P5 are COMPLETE and verified (see lifecycle/archive/audits/erdtree-v0.1/
+  FINAL.md): the safety/awareness core, the three high-leverage tools
+  (services, packages, logs), the Ollama client + prompt assembly, the closed
+  agentic loop + tool-call benchmark, and the product login shell with the
+  dead-man bash fallback. The frozen tool interface lives in
+  core/tools/__init__.py and the loop is driven by core/agent/repl.py.
+
+  Three capabilities remain before the v0.1 framework is feature-complete
+  (installer/tier-plumbing/training are separate later phases):
+    P6  the seven remaining tools (network, firewall, users, disk, processes,
+        hardware, files) — the lockout/data-loss blast-radius tools.
+    P7  retrieval (RAG) exposed as a tool the loop calls only when it decides
+        it needs facts — local corpus, local embeddings, local vector index.
+    P8  invisible memory: rolling compaction, a per-host facts preamble, and
+        episodic RAG-over-the-audit-log, so the session never shows a context
+        limit ("the amnesia moment" is the cardinal UX sin).
+
+Success criteria (measurable)
+  SC-P6.1  All 7 tools implement the FROZEN interface (ToolSpec/OpSpec/ArgSpec/
+           ToolResult) in core/tools/__init__.py, self-register into the
+           module-level `registry` singleton, and shell out ONLY via
+           run_subprocess (no tool-specific Python libs — I1/portability).
+  SC-P6.2  Every lockout/data-loss op routes through the EXISTING hardened
+           classifier (core/agent/permissions.classify) as DESTRUCTIVE and is
+           gated CONFIRM_TYPED (typed "DESTROY"), never auto-confirmed, never
+           run non-interactively. VERIFIED by feeding each tool's synthesized
+           command line through classify() in tests.
+  SC-P6.3  synthesize_command() in core/agent/repl.py renders a FAITHFUL shell
+           command line for every new (tool, op) pair, so the classifier sees
+           the real blast radius (e.g. disk.format -> "mkfs.ext4 /dev/sdb1",
+           firewall.panic -> "firewall-cmd --panic-on"). No new (tool, op) may
+           fall through to the bare `f"{tool} {op}"` default-WRITE floor when a
+           more severe class is warranted.
+  SC-P6.4  main.py registers all 7 new tools (import side-effect), and the
+           full registered toolset advertises cleanly through router schemas
+           (registry_schemas) with zero I2-forbidden terms in any description.
+  SC-P7.1  rag/ builds a corpus + local embeddings + a local vector index with
+           ZERO network calls (offline-built; I1). Index footprint within the
+           plan's budget (~3–5 GB SSD, ~1–2 GB RAM at query time).
+  SC-P7.2  Retrieval is a TOOL ("docs") implementing the frozen interface; a
+           factual query returns ~3 tight reranked chunks; a routine op
+           ("restart nginx") triggers ZERO retrieval (the loop chooses to call
+           it, it is never prepended).
+  SC-P7.3  The retrieval engine is a REUSABLE component (rag/retrieve.py) that
+           P8 points at the audit log without a second retriever being built.
+  SC-P7.4  Per-tier retrieval budget (k chunks, max chars) is a config knob
+           read from outside core/ (I6); core/tools/docs.py never hardcodes a
+           tier name.
+  SC-P8.1  Rolling compaction keeps tool-call OUTCOMES (exit code + summary)
+           and drops verbose raw stdout/stderr once reasoned over; recent turns
+           stay verbatim (deixis "restart it" / "the one we just did" resolves).
+  SC-P8.2  A per-host facts file is injected as a tiny preamble every turn.
+  SC-P8.3  Episodic memory: a fact established many tasks ago is recalled via
+           audit-log retrieval and answered AS IF KNOWN — no "out of context",
+           no reset, no re-ask. The compaction threshold is a per-tier knob.
+  SC-P8.4  NO user-visible context-limit / reset / "amnesia" language EVER
+           (I2 + UX). A test corpus probes specifically for leakage.
+
+Non-goals (explicitly OUT of scope here)
+  - Phase 9 tier plumbing (config.yaml/prompt.txt/tier loader), Phase 10
+    training, Phase 11 installer/RPM. P6/P7/P8 expose CONFIG KNOBS (retrieval
+    budget, compaction threshold, facts-file path, corpus/index paths) but read
+    them via the same env/opaque mechanism main.py already uses
+    (AppConfig.from_env) — the real tier loader lands in P9 and slots in
+    without touching P6/P7/P8 code.
+  - Shipping a redistribution-cleared raw corpus inside an ISO (a P11 concern).
+    P7 tracks per-source licensing and ships the BUILD RECIPE by default.
+  - Fleet/multi-node RAG (Radahn-era). Single-machine only.
+  - Live runtime on a real Rocky/Ollama box (DEFERRED-TO-MOSSAD; see §13).
+
+Assumptions made (call out if any is wrong — it reshapes a phase)
+  A1  The frozen tool interface in core/tools/__init__.py is FINAL and will not
+      change for P6. (Verified by reading it; ToolResult/ToolSpec/OpSpec/ArgSpec
+      + the module-level `registry` singleton + run_subprocess are all present
+      and used by services/packages/logs.)
+  A2  The hardened classifier in core/agent/permissions.py already recognizes
+      the dangerous SHAPES P6 produces (mkfs/wipefs/fdisk/parted/dd-to-device,
+      firewall-cmd --panic-on / iptables -F / nft flush ruleset / ufw reset,
+      usermod -L / passwd -l / userdel / gpasswd -d wheel, ip/nmcli mutations).
+      VERIFIED by reading _classify_argv + _DESTRUCTIVE_PROGRAMS + the firewall/
+      user/disk branches. P6's job is to SYNTHESIZE the right command string so
+      that logic fires — NOT to re-implement classification in the tools.
+  A3  P6 tools must NOT call permissions or audit themselves (the services.py
+      precedent: execute() is side-effect-pure w.r.t. the gate; the REPL
+      resolves the gate and writes the audit record). The optional `audit=`
+      convenience kwarg seen in services.py is test-only and OPTIONAL — new
+      tools may omit it for simplicity, but if added must mirror the contract.
+  A4  Embedding model + vector index choice are LOCAL and CPU-runnable on the
+      dev host for tests with a tiny fixture corpus (so test_rag_retrieve runs
+      without GPU/Ollama). The production embed pass runs on mossad.
+  A5  The audit JSONL schema (audit.py _SCHEMA_KEYS) is the durable episodic
+      transcript P8 retrieves over. Its fields (ts, tier, nl_input,
+      translated_command, tool, args, permission_decision, exit_code,
+      stdout_summary, stderr_summary, result) are sufficient to reconstruct
+      "what we did" without storing raw context. VERIFIED by reading audit.py.
+  A6  Python; pure stdlib + a minimal pinned dependency set per workstream.
+      RAG dependencies (embedder + index) live in a rag/requirements.txt so the
+      core agent has zero new runtime deps when docs/ is absent.
+
+---------------------------------------------------------------------
+## 1. ARCHITECTURE OVERVIEW
+
+How P6/P7/P8 slot into the EXISTING, BUILT loop (core/agent/repl.py):
+
+  user English -> Repl.run_turn
+     -> TurnContext.snapshot_text()           [P8 injects facts preamble here]
+     -> assemble(...) prompt                   [P8 supplies compacted history]
+     -> responder (Ollama)                     [UNCHANGED]
+     -> Router.route -> ParsedCall(s)          [UNCHANGED; new tools auto-advertise]
+     -> for each call:
+          synthesize_command(call)             [P6 EXTENDS this — keystone]
+          perm.classify(command, exec_ctx)     [UNCHANGED hardened classifier]
+          _resolve_gate (ALLOW/CONFIRM/TYPED/REFUSE)   [UNCHANGED]
+          registry.dispatch -> tool.execute    [P6 adds 7 tools; P7 adds docs]
+          audit.write(...)                     [UNCHANGED; P8 reads this log later]
+          context.invalidate() on mutation     [UNCHANGED]
+     -> English answer terminates the turn
+
+The three phases touch THREE distinct seams:
+
+  P6  the TOOL seam (core/tools/*) + the synthesize_command() classifier bridge
+      in repl.py + the tool-import list in main.py. NO change to the interface,
+      the router, the permissions module, or the audit module.
+
+  P7  a NEW package rag/ (corpus build, embed, index, retrieve) + ONE new tool
+      core/tools/docs.py that wraps rag.retrieve behind the frozen interface.
+      docs.retrieve is a READ op (no gate friction). main.py imports it.
+
+  P8  a NEW module core/agent/memory.py (compaction + window management) that
+      Repl consumes for `history`, + core/context/facts.py (preamble) that
+      TurnContext.snapshot_text composes in, + an episodic retriever that
+      REUSES rag/retrieve.py pointed at /var/log/{tier}/audit.jsonl. Repl.run_turn
+      changes from `history=[]` (currently hardcoded, repl.py line ~237) to a
+      memory-managed history; this is the one surgical edit to the built loop.
+
+Invariants threaded through every phase (from CLAUDE.md + original §1):
+  I1  No external API calls at runtime. Local Ollama + local index only. The
+      corpus EMBED step is offline. docs.py opens no socket.
+  I2  No AI/LLM/model/agent/agentic language in user-facing strings. NOTE the
+      prompt.py forbidden set already bans "model", "agent", "inference",
+      "ollama", "neural", "llm", "ai", "gpt", "machine learning". P7/P8 user-
+      facing text and tool DESCRIPTIONS must clear that same filter.
+  I3  Permission gate before every write/destructive op; destructive = typed
+      "DESTROY", never auto-confirmed, never non-interactive. P6 satisfies this
+      THROUGH the existing classifier — never by self-classifying in a tool.
+  I4  Audit-log every operation (the REPL already does this for every dispatch,
+      including refusals and misses). P6 tools need no audit code of their own.
+  I5  System context always injected. P8's facts preamble augments, never
+      replaces, the live snapshot.
+  I6  No tier/product names in core/. P7 budget + P8 threshold + facts path are
+      opaque config values, read like AppConfig already reads ERDTREE_*.
+  I8  Performance is a feature. Retrieval is opt-in (not every turn). Compaction
+      is cheap (string/token accounting, no model calls).
+  I9  Dead-man fallback is upstream (P5) and untouched. P6/P7/P8 must never
+      raise out of run_turn in a way that defeats it: every new failure path
+      degrades to a ToolResult or a safe fallback string, never an exception
+      that escapes the loop.
+
+---------------------------------------------------------------------
+## 2. AFFECTED SURFACE AREA
+
+Files to CREATE (full paths under /home/aaron/erdtree/):
+
+  P6 (tools):
+    core/tools/network.py
+    core/tools/firewall.py
+    core/tools/users.py
+    core/tools/disk.py
+    core/tools/processes.py
+    core/tools/hardware.py
+    core/tools/files.py
+    tests/test_tools_network.py
+    tests/test_tools_firewall.py
+    tests/test_tools_users.py
+    tests/test_tools_disk.py
+    tests/test_tools_processes.py
+    tests/test_tools_hardware.py
+    tests/test_tools_files.py
+    tests/test_synthesize_command.py   (classifier-bridge gate; see P6.8)
+
+  P7 (RAG):
+    rag/__init__.py
+    rag/build_corpus.py        (assemble + chunk + per-source license manifest)
+    rag/embed.py               (local embedding, offline)
+    rag/index.py               (local vector index build + query API)
+    rag/retrieve.py            (the reusable engine: embed-query -> search ->
+                                rerank -> top-k tight chunks)
+    rag/requirements.txt       (pinned: embedder + index backend; rag-only)
+    rag/LICENSES.md            (per-source redistribution verdict)
+    rag/fixtures/              (tiny test corpus so test_rag_retrieve runs offline)
+    core/tools/docs.py         (the "docs" retrieval tool, frozen interface)
+    tests/test_rag_index.py
+    tests/test_rag_retrieve.py
+    tests/test_tools_docs.py
+
+  P8 (memory):
+    core/agent/memory.py       (TranscriptMemory: rolling compaction + window)
+    core/context/facts.py      (per-host facts preamble loader)
+    core/agent/episodic.py     (audit-log episodic retriever; reuses rag.retrieve)
+    tests/test_memory.py
+    tests/test_facts.py
+    tests/test_episodic.py
+    tests/test_compaction.py   (the amnesia/immortality integration test)
+
+Files to MODIFY:
+  core/agent/repl.py
+    - EXTEND synthesize_command() with a branch per new tool (P6). KEYSTONE.
+    - Repl.__init__: accept an optional `memory` (TranscriptMemory) and
+      `facts` source; thread compacted history into assemble(...) instead of
+      the current hardcoded `history=[]` (P8). Backward-compatible default:
+      memory=None -> current behavior (empty history) preserved.
+  core/agent/context.py
+    - TurnContext.snapshot_text(): optionally prepend the facts preamble
+      (P8) when a facts source is supplied. Backward-compatible default: no
+      facts source -> unchanged output.
+  core/agent/main.py
+    - Add the 7 P6 tool imports (self-register) (lines ~46–48 region).
+    - Add `import core.tools.docs` (P7), guarded so a missing index degrades
+      to "docs tool absent" rather than crashing build_repl (I9).
+    - build_repl: construct TranscriptMemory + facts source + episodic
+      retriever (P8) and pass into Repl. Read new knobs from AppConfig
+      (ERDTREE_RETRIEVAL_K, ERDTREE_COMPACTION_THRESHOLD, ERDTREE_FACTS_PATH,
+      ERDTREE_CORPUS_INDEX) the same opaque way ERDTREE_* are read today.
+  CLAUDE.md
+    - Append VERIFIED commands/gotchas as phases land (only verified entries).
+
+Migrations: none (no DB). State = live box + audit JSONL + per-host facts file
++ the on-disk vector index. (Consistent with the original §4.)
+
+New env vars / config (read opaquely in AppConfig.from_env, like ERDTREE_MODEL):
+  ERDTREE_CORPUS_INDEX        path to the built vector index (P7).
+  ERDTREE_RETRIEVAL_K         per-tier retrieval budget: chunks to inject (P7).
+  ERDTREE_RETRIEVAL_MAXCHARS  per-tier retrieval budget: char cap (P7).
+  ERDTREE_FACTS_PATH          per-host facts file path (P8).
+  ERDTREE_COMPACTION_THRESHOLD per-tier compaction trigger (tokens/chars) (P8).
+  (All have safe defaults; absence = feature degrades off, never crashes.)
+
+New dependencies:
+  Core agent: NONE (P6 is pure stdlib + subprocess; P8 is pure stdlib).
+  rag/ only (rag/requirements.txt, pinned): one local embedding model + one
+  local vector index backend. RECOMMENDED in P7 §3: sqlite-vec (zero-server,
+  single-file, ships as a sqlite extension — trivial to embed in an ISO and to
+  reuse for episodic memory) over faiss (heavier, mmap index files, C++ build).
+  Decision is finalized in P7 Step 1 with the footprint measured.
+
+---------------------------------------------------------------------
+## 3. PHASES
+
+Phase ordering rationale: P6 and P7 are INDEPENDENT (disjoint files; P7's only
+core touch is adding one tool that self-registers) and run in PARALLEL. P8
+depends on P7 (it reuses rag/retrieve.py for episodic memory) and on the loop
+existing (P4, done). Within P6, the 7 tools fan out in parallel AFTER nothing
+(the interface is already frozen), then ONE sequential consolidation edit wires
+synthesize_command + main.py. Within P7, the index-format contract is defined
+first, then corpus-build and retrieve fan out.
+
+=====================================================================
+### PHASE 6: The Seven Remaining Tools + Classifier Bridge + Registry Wiring
+            Goal: complete the toolset; every lockout/data-loss op is gated
+                  DESTRUCTIVE through the EXISTING classifier.
+=====================================================================
+Prerequisites: none new (P2 froze the interface; P4 built the loop; P5 the
+shell). All are COMPLETE.
+
+Deliverables:
+  - 7 tools (network/firewall/users/disk/processes/hardware/files), each a
+    near-clone of the services.py STRUCTURE: per-op functions returning
+    ToolResult via run_subprocess, a _DISPATCH table, a ToolSpec with per-op
+    permission_class, self-registration into `registry`, the SELinux-hint
+    helper where relevant.
+  - The EXTENDED synthesize_command() in repl.py (the classifier bridge).
+  - The 7 new tool imports in main.py.
+  - Per-tool tests + the synthesize_command gate test.
+
+Per-tool operation map + permission class (declared in each ToolSpec; the
+REAL gate is the classifier via synthesize_command — the OpSpec class is the
+advisory/pre-classify aid the router surfaces):
+
+  network.py    (nmcli / ip)
+    show/status (READ), connections (READ), interfaces (READ)
+    bring_up    (WRITE)  ip link set <if> up / nmcli con up
+    bring_down  (DESTR)  "drop the link you're on" -> typed; synthesize
+                         "ip link set <if> down" (classifier: ip ... set = write
+                         floor; ESCALATE in synthesize by emitting the down on a
+                         link — see NOTE below)
+    set_ip      (WRITE)  nmcli con modify / ip addr add
+  firewall.py   (firewall-cmd)
+    list (READ), get_zones (READ), query (READ)
+    add_service/add_port/remove_service/remove_port (WRITE)
+    reload (WRITE)
+    panic_on (DESTR)  -> "firewall-cmd --panic-on" (classifier: DESTRUCTIVE)
+    set_default_zone (WRITE; on a remote SSH host can lock out -> see NOTE)
+  users.py      (useradd/usermod/passwd/userdel/gpasswd)
+    list (READ), info (READ)
+    add (WRITE), set_shell (WRITE), add_to_group (WRITE)
+    lock (DESTR)     -> "usermod -L <user>"  (classifier: DESTRUCTIVE)
+    delete (DESTR)   -> "userdel <user>"     (classifier: DESTRUCTIVE)
+    remove_from_privgroup (DESTR) -> "gpasswd -d <user> wheel" (DESTRUCTIVE)
+  disk.py       (lsblk/df/mkfs/parted/mount/umount/dd)
+    usage (READ), list (READ), smart (READ via smartctl)
+    mount (WRITE), unmount (WRITE)
+    format (DESTR)    -> "mkfs.<fstype> <device>"     (classifier: DESTRUCTIVE)
+    partition (DESTR) -> "parted <device> ..."         (classifier: DESTRUCTIVE)
+    wipe (DESTR)      -> "wipefs -a <device>"           (classifier: DESTRUCTIVE)
+    dd_write (DESTR)  -> "dd if=... of=<device>"        (classifier: DESTRUCTIVE)
+  processes.py  (ps/top/kill/pkill/renice)
+    list (READ), tree (READ), top (READ), info (READ)
+    signal (WRITE)   -> "kill <pid>" (plain); BUT "kill -1 <pid>"-of-init or
+                        kill-all -1 must synthesize the real argv so the
+                        classifier's "kill ... -1" DESTRUCTIVE rule fires.
+    renice (WRITE)
+  hardware.py   (lscpu/lspci/lsusb/lsblk/free/sensors/dmidecode) — ALL READ
+    cpu/memory/pci/usb/block/sensors/summary (all READ)
+  files.py      (ls/stat/cat/find/cp/mv/rm/mkdir/chmod/chown)
+    list/read/stat/find (READ)
+    copy/move/mkdir/chmod/chown/write (WRITE)
+    remove (WRITE normally; recursive/forced or system-path -> DESTRUCTIVE via
+            the classifier when synthesize emits "rm -rf <path>")
+
+Steps:
+  1. (PARALLEL, 7 siblings) Implement each tool against the frozen interface,
+     modeled on services.py. STRICT rules:
+       * subprocess only via run_subprocess (no psutil, no pyroute2, no shutil
+         for destructive ops — shell out so the classifier sees the command).
+       * NO call to permissions or audit inside the tool (A3).
+       * Every user-facing summary/description clears the I2 filter (reuse the
+         prompt.py forbidden-term list as a test assertion).
+       * SELinux-hint helper (copy services.py _maybe_selinux_hint) on tools
+         where AVC denials are likely (files, disk, firewall, users).
+       * Clamp/validate args (e.g. files.read line cap) like services.logs does.
+  2. (SEQUENTIAL, after the 7 land) EXTEND synthesize_command() in repl.py:
+     add one branch per new tool that renders the FAITHFUL command line so the
+     classifier assigns the correct class. This is the load-bearing correctness
+     step — see the dedicated gate in Validation. Conservatism rule: when a
+     branch cannot render precisely, fall through to the existing default
+     `f"{tool} {op}"` (WRITE floor) — NEVER emit a command that UNDER-states the
+     blast radius. For destructive ops, emit the real dangerous form (mkfs.../
+     userdel.../firewall-cmd --panic-on/ip link set <if> down) so the classifier
+     ESCALATES to DESTRUCTIVE; the tool's own OpSpec class is advisory only.
+  3. (SEQUENTIAL) Add the 7 imports to main.py so they self-register.
+  4. Author tests: each test_tools_<x> mocks run_subprocess (dev host has no
+     systemctl/nmcli/etc.), asserts structured results + that the op's
+     synthesized command classifies to the EXPECTED gate.
+
+Validation:
+  - Per-tool: pytest test_tools_<x> green; read ops produce results without a
+    gate; write/destructive ops produce results; I2 filter passes on every
+    description + summary.
+  - test_synthesize_command (THE GATE): for EVERY (tool, op) across all 7 tools,
+    assert synthesize_command(ParsedCall(...)) -> classify(...) yields the
+    intended OpClass/Gate. Specifically assert the lockout/data-loss set
+    (firewall.panic_on, users.lock/delete/remove_from_privgroup, disk.format/
+    partition/wipe/dd_write, network.bring_down, files.remove recursive) ALL
+    classify DESTRUCTIVE -> CONFIRM_TYPED, and are REFUSE under a
+    non-interactive ExecContext. This is SC-P6.2 + SC-P6.3 and is the phase's
+    correctness keystone.
+  - Registry: a one-shot test imports all tools + asserts
+    registry.list_tools() contains the full 10 and registry_schemas() builds
+    clean schemas for each.
+
+Risks / Edge cases:
+  - UNDER-GATING via a lazy synthesize_command branch (the cardinal P6 sin):
+    e.g. emitting "disk format sdb1" instead of "mkfs.ext4 /dev/sdb1" would
+    leave it at the WRITE floor. Mitigation: the test_synthesize_command gate
+    is exhaustive over every (tool, op); route it to adversarial review.
+  - A tool importing a Python lib that performs the op directly (bypassing the
+    classifier, since the gate keys off the SYNTHESIZED string, not the tool's
+    internals). Mitigation: hard rule + review — run_subprocess is the ONLY
+    sanctioned execution path (it is literally the only one the classifier can
+    reason about). A grep gate: no `import psutil|pyroute2|shutil.rmtree` etc.
+  - Remote SSH lockout (firewall/network/users) — the classifier already has
+    ExecContext.remote raising stakes; ensure synthesize passes through the
+    interactive flag (Repl already builds ExecContext(interactive=...)). The
+    confirm REASON text already names the lockout risk from the classifier.
+  - hardware.py is all-READ — keep it trivial; do not over-engineer.
+
+Subagent orchestration:
+  - Execution shape: [PARALLEL FANOUT OK — 7 siblings] for the tools, then a
+    SEQUENTIAL consolidation sub-phase (P6.8) for synthesize_command + main.py
+    (single-writer on repl.py and main.py — must NOT be parallelized; two
+    siblings editing repl.py would conflict on the Edit tool).
+  - REQUIRED subagent_type: general-purpose for the 7 tool siblings.
+       For P6.8 (the synthesize_command classifier bridge): general-purpose
+       BUILDER, then route the resulting test_synthesize_command + the gate
+       correctness to the audit-duo SKILL (two independent agents: "find a
+       (tool,op) that under-gates a destructive op"). Do NOT inline-personate.
+  - REQUIRED model:
+       sonnet for network/processes/hardware/files (mechanical subprocess
+         wrappers; files has the most ops but is still pattern work).
+       opus for firewall.py + users.py + disk.py (highest lockout/data-loss
+         blast radius; the synthesize mapping for these MUST be exactly right).
+       opus for P6.8 (the classifier bridge is correctness-critical; one wrong
+         synthesized string under-gates a destructive op on a live box).
+  - Run in background: yes for the 7 tool siblings (independent, join after);
+       no for P6.8 (it gates the audit-duo verification and main.py wiring).
+  - Brief template (tool sibling):
+       "Execute Phase 6 of /home/aaron/erdtree/lifecycle/pending/plans/
+        erdtree-p6-p7-p8.txt. Your slice: core/tools/<X>.py. MODEL IT ON
+        core/tools/services.py EXACTLY (per-op fns -> ToolResult via
+        run_subprocess; _DISPATCH; ToolSpec with per-op permission_class;
+        self-register into `registry`). Read §3 Phase 6 for <X>'s op/permission
+        map. Rules: subprocess ONLY via run_subprocess; NO permissions/audit
+        calls inside the tool; every description+summary passes the I2 forbidden
+        -term filter; SELinux hint where relevant. Touch only core/tools/<X>.py
+        + tests/test_tools_<X>.py. Validation: test_tools_<X> green; I2 clean.
+        Do NOT edit repl.py or main.py (a later consolidation step does that).
+        Print one-line summary and exit."
+  - Brief template (P6.8 consolidation):
+       "Execute Phase 6 consolidation (P6.8) of <PLAN>. EXTEND
+        core/agent/repl.py synthesize_command() with one branch per new tool so
+        the EXISTING permissions.classify sees the FAITHFUL dangerous command
+        line (mkfs/userdel/firewall-cmd --panic-on/ip link set down/rm -rf).
+        Add the 7 tool imports to core/agent/main.py. Write
+        tests/test_synthesize_command.py asserting EVERY (tool,op) classifies to
+        the intended gate, and that the lockout/data-loss set is DESTRUCTIVE ->
+        CONFIRM_TYPED and REFUSE non-interactively. Touch only repl.py, main.py,
+        the new test. Validation: gate test green for all 10 tools. Print
+        one-line summary and exit."
+
+=====================================================================
+### PHASE 7: Retrieval as a Tool (local corpus, embed, index, rerank)
+            Goal: the loop can RETRIEVE Linux facts when it decides to —
+                  reranked ~3 tight chunks, fully offline, reusable engine.
+=====================================================================
+Prerequisites: P2 interface (done), P4 loop (done). INDEPENDENT of P6 — runs
+in parallel.
+
+Deliverables:
+  - rag/build_corpus.py — assemble + chunk a corpus from: local man pages
+    (man -k / mandb / /usr/share/man), Rocky/RHEL docs, Arch wiki dumps,
+    quality-filtered Stack Overflow (license-gated), CVE summaries. Emits
+    normalized chunks + a per-source license manifest (rag/LICENSES.md).
+  - rag/embed.py — one-time LOCAL embedding (offline; CPU-capable on small
+    inputs for tests; GPU on mossad for the full corpus). Pinned model.
+  - rag/index.py — build + query a LOCAL vector index. DECISION: sqlite-vec
+    (single-file, server-less, ISO-friendly, reusable by P8 episodic) unless
+    the footprint measurement in Step 1 disqualifies it (then faiss). Record
+    the verdict + measured SSD/RAM footprint in rag/index.py docstring +
+    docs/decisions/0003-vector-index.md.
+  - rag/retrieve.py — THE REUSABLE ENGINE. retrieve(query, k, max_chars) ->
+    list[Chunk]: embed query -> ANN search (overfetch ~k*5) -> rerank
+    (cross-encoder OR a cheap lexical+score rerank if no reranker ships) ->
+    return ~k tight chunks within max_chars. Precision over recall. The engine
+    takes the INDEX PATH as a parameter so P8 can point it at a different index
+    (the audit-log episodic index) without code change (SC-P7.3).
+  - core/tools/docs.py — the "docs" tool, frozen interface. ONE op: retrieve
+    (READ — no gate friction). args: query (str, required), k (int, optional).
+    execute() calls rag.retrieve and returns a ToolResult whose stdout is the
+    joined chunks and summary is "Retrieved N reference passages." (I2-clean —
+    NO "retrieval/embedding/model"; "reference passages" is operator language).
+    Self-registers into `registry`. Reads k/max_chars defaults from the opaque
+    config (ERDTREE_RETRIEVAL_K / ERDTREE_RETRIEVAL_MAXCHARS) — never a tier
+    name (I6).
+  - rag/fixtures/ — a tiny (~dozen-chunk) test corpus + prebuilt mini-index so
+    test_rag_retrieve runs OFFLINE on the dev host with no GPU.
+
+Steps:
+  1. (FIRST, defines the contract) Choose the index backend by MEASURING the
+     fixture-corpus footprint and the query latency; write the index format +
+     the rag.retrieve(query, index_path, k, max_chars) -> [Chunk] signature.
+     This signature is the contract the docs tool AND P8 episodic both bind to.
+  2. (PARALLEL after Step 1)
+     (a) corpus build + embed + index over the fixture corpus (full corpus is
+         a DEFERRED-TO-MOSSAD background job; the recipe + license manifest
+         ship now).
+     (b) rag/retrieve.py + core/tools/docs.py against the Step-1 contract.
+  3. Wire the docs tool into main.py (guarded import: if the index path is
+     absent/unreadable, the tool registers in a degraded "index unavailable"
+     mode that returns an empty-but-valid ToolResult — never crashes build_repl,
+     I9). The loop simply gets no useful chunks and proceeds (it called docs by
+     choice; an empty result is a valid answer).
+  4. Track per-source licensing in rag/LICENSES.md: ship only redistributable
+     sources in any ISO, OR ship the build recipe the user runs at firstboot.
+     Default: SHIP THE RECIPE (the original §10 Q4 resolution leaning).
+
+Validation:
+  - test_rag_retrieve: against rag/fixtures, a factual query ("what does the X
+    mount flag do") returns tight, relevant chunks within max_chars; an
+    unrelated query returns low/zero results rather than noise. Index build over
+    the fixture is fully offline (assert no socket opened — reuse the egress
+    rig pattern, or assert via a no-network test shim).
+  - test_tools_docs: the docs tool implements the interface, registers,
+    classifies as READ (synthesize_command -> a read-shaped command, gate
+    ALLOW), and degrades cleanly when the index is absent. I2 filter passes on
+    description + summary.
+  - SC-P7.2 behavioral check: a routine-op turn ("restart nginx") drives the
+    loop WITHOUT a docs call (the model chose tools, not retrieval). Asserted
+    in an e2e-style test with a scripted responder that does NOT emit a docs
+    call — i.e. nothing prepends retrieval; it is purely opt-in.
+
+Risks / Edge cases:
+  - Over-retrieval burns prefill/KV-cache VRAM on 8 GB cards (original §3 P7
+    warning). Mitigation: tight per-tier k/max_chars budget; precision rerank;
+    opt-in-by-loop only.
+  - The reranker itself being a heavyweight model that violates the "no second
+    big model" footprint. Mitigation: prefer a SMALL cross-encoder or a lexical
+    rerank; the engine must run on CPU for tests. Decide in Step 1.
+  - Corpus licensing (Arch wiki / SO). Mitigation: rag/LICENSES.md per-source;
+    default to shipping the recipe, not the raw corpus.
+  - docs.py accidentally synthesizing to a non-read command -> gate friction on
+    a pure read. Mitigation: synthesize_command's docs branch must render a
+    clearly-read shape (e.g. "man -k <query>" or a sentinel read token) so the
+    classifier returns READ/ALLOW. Covered by test_tools_docs.
+
+Subagent orchestration:
+  - Execution shape: Step 1 [SINGLE] (defines the shared contract), then
+    [PARALLEL FANOUT OK — 2 siblings] for (a) corpus/index and (b) retrieve+
+    docs tool. The docs-tool branch in synthesize_command is a tiny edit folded
+    into P6.8's repl.py pass (consolidate: only ONE agent edits repl.py — see
+    §12.2). If P6.8 has already run, this edit appends; if running concurrently,
+    SERIALIZE the repl.py edit after P6.8.
+  - REQUIRED subagent_type: general-purpose for all P7 work.
+  - REQUIRED model: opus for Step 1 (the index/engine contract is reused by P8
+    and a wrong abstraction cascades into episodic memory). sonnet for the
+    corpus-build sibling and the retrieve+docs sibling (engineering, not
+    frontier reasoning).
+  - Run in background: yes for the corpus/embed sibling (long wall-clock even on
+    the fixture if the embedder loads); no for the contract step.
+  - Brief template (Step 1, contract):
+       "Execute Phase 7 Step 1 of <PLAN>. Choose the LOCAL vector index backend
+        (default sqlite-vec; measure fixture footprint + latency; faiss only if
+        disqualified). Freeze the index format + the
+        rag.retrieve(query, index_path, k, max_chars) -> [Chunk] signature —
+        this is reused by P8 episodic. Write docs/decisions/0003-vector-index.md.
+        Touch only rag/index.py (stub), rag/retrieve.py (signature), the
+        decision doc. Validation: signature documented + footprint recorded.
+        Print one-line summary + the chosen backend and exit."
+  - Brief template (sibling b, retrieve + tool):
+       "Execute Phase 7 (retrieve+docs) of <PLAN> against the Step-1 contract.
+        Build rag/retrieve.py (embed-query -> ANN -> rerank -> ~k tight chunks)
+        + core/tools/docs.py (frozen interface, ONE retrieve op = READ, opaque
+        k/max_chars config, self-register, I2-clean summary 'reference
+        passages'). Offline only (no socket). Touch only rag/retrieve.py,
+        core/tools/docs.py, tests/test_rag_retrieve.py, tests/test_tools_docs.py.
+        Do NOT edit repl.py (the synthesize_command docs branch is added in the
+        P6.8 repl.py pass). Validation: factual query -> tight chunks; routine op
+        -> zero retrieval; index-absent degrades cleanly. Print summary and exit."
+
+=====================================================================
+### PHASE 8: Invisible Memory — Compaction + Facts Preamble + Episodic RAG
+            Goal: an immortal session that NEVER shows a context limit; old
+                  facts recalled silently; deixis still resolves.
+=====================================================================
+Prerequisites: P4 loop (done), P1 audit log (done — the durable transcript),
+P7 rag/retrieve.py (the reused engine). DEPENDS on P7.
+
+Deliverables:
+  - core/agent/memory.py — TranscriptMemory: owns the message-history window
+    Repl currently hardcodes as `history=[]` (repl.py ~line 237). Provides:
+      * record(assistant_msg, tool_result_msgs) — accumulate the turn.
+      * compacted_history(threshold) — KEEP recent turns verbatim (for deixis);
+        for older turns, KEEP tool-call OUTCOMES (the {exit_code, summary} the
+        router already shapes in tool_result_message, router.py ~line 466) and
+        DROP the verbose stdout/stderr once reasoned over. Threshold is the
+        per-tier knob (chars/tokens). Pure stdlib accounting — no model calls.
+      * Result: history fed to assemble(...) stays under budget across many
+        tasks without any visible reset.
+  - core/context/facts.py — load a tiny curated per-host facts file (path from
+    opaque config ERDTREE_FACTS_PATH) and expose it as a preamble string.
+    TurnContext.snapshot_text() prepends it (I5 augmentation, not replacement).
+    Absent file -> empty preamble (no error, no mention).
+  - core/agent/episodic.py — EpisodicMemory: builds/refreshes a vector index
+    over /var/log/{tier}/audit.jsonl (the audit path Repl already writes) USING
+    rag/retrieve.py's engine pointed at that index (SC-P7.3 — no second
+    retriever). recall(query) -> short relevant past-operation snippets the
+    prompt layer can inject so the loop answers "what did we do earlier" as
+    KNOWING. The audit record fields (nl_input, translated_command, tool,
+    result) are the episodic corpus (A5).
+  - The surgical Repl edit: Repl.__init__ accepts optional `memory` +
+    `episodic` + `facts`; run_turn uses memory.compacted_history() for the
+    `history` arg and (when the loop's query is retrospective) lets the model
+    call episodic recall via the SAME docs-tool mechanism OR a thin internal
+    inject. PREFER: expose episodic recall through the docs tool's engine so
+    the loop calls it like any other read — keeping the "loop decides" property
+    and avoiding a special always-on path. Backward-compatible: memory=None
+    preserves today's behavior exactly (existing tests stay green).
+
+Steps:
+  1. Implement TranscriptMemory with the keep-outcomes/drop-raw + recent-
+     verbatim policy. Unit-test the policy directly: after N synthetic turns
+     exceeding the threshold, assert (a) recent K turns are byte-identical,
+     (b) older turns retain {exit_code, summary} but not raw stdout, (c) total
+     size is under budget.
+  2. Implement core/context/facts.py + thread it through TurnContext (default-
+     off, backward-compatible).
+  3. Implement episodic.py reusing rag/retrieve.py against an audit-log index.
+     Build the index incrementally from the JSONL (cheap append; rebuild on a
+     size delta). Point retrieve at THIS index_path (proves SC-P7.3).
+  4. Make the surgical repl.py edit (memory-managed history; optional episodic).
+     Keep memory=None default behavior identical.
+  5. Design + test AGAINST the amnesia moment: a corpus of multi-task sessions
+     that exceed the window; assert NO user-visible reset/limit/"context"
+     language ever appears (reuse the prompt.py I2 forbidden filter PLUS a
+     dedicated amnesia-phrase blocklist: "context", "limit", "reset",
+     "forgot", "earlier session", "no longer have"), AND assert a fact
+     established 50 tasks ago is recalled via episodic and answered as known,
+     AND a recent-turn deixis ("restart it") still resolves to the right unit.
+
+Validation:
+  - test_memory: compaction policy unit tests (Step 1 assertions) green.
+  - test_facts: facts preamble injected when present; empty + silent when absent.
+  - test_episodic: a query matching a past audited op returns it via the reused
+    rag engine; the episodic index_path differs from the docs index_path
+    (proves reuse, not a fork).
+  - test_compaction (the integration keystone): immortal session, zero visible
+    reset (amnesia-phrase blocklist + I2 filter pass), old fact recalled
+    silently, deixis resolves. This is SC-P8.1–SC-P8.4.
+  - Regression: the existing repl/router/loop tests stay green with memory=None
+    default (the surgical edit is backward-compatible).
+
+Risks / Edge cases:
+  - Compaction drops something still needed -> mitigated by episodic audit-log
+    recall as the durable fallback (the box + the log are source of truth, not
+    the window — original decision #5).
+  - An "amnesia moment" leaks to the user = the cardinal UX sin. Mitigation: the
+    dedicated amnesia-phrase blocklist test, run as a permanent regression gate.
+  - Episodic index staleness vs the live audit log -> rebuild on size delta;
+    accept eventual consistency (a just-written op is also still in the verbatim
+    recent window, so it is never invisible).
+  - The surgical repl.py edit breaking the gate/audit flow -> keep the edit to
+    the `history` argument ONLY; do not touch the dispatch/gate/audit path.
+    Backward-compat default is the safety net.
+  - I2 leakage: episodic/facts text must avoid "model/agent/inference/ollama".
+    The docs-tool path already passes I2; route episodic through the same.
+
+Subagent orchestration:
+  - Execution shape: [SEQUENTIAL — depends on P7] internally three sub-units
+    that are MOSTLY independent (memory.py, facts.py, episodic.py) but converge
+    on ONE surgical repl.py edit + the integration test. Build the three in a
+    bounded [PARALLEL FANOUT OK — 3 siblings] (disjoint files), then SEQUENTIAL
+    consolidation for the repl.py edit + test_compaction (single-writer on
+    repl.py — must not collide with the P6.8 repl.py edit; SERIALIZE after it).
+  - REQUIRED subagent_type: general-purpose for memory.py/facts.py/episodic.py.
+       Route the FINAL invisible-memory behavior (the amnesia gate) to the
+       audit-duo SKILL: "find an input/sequence that surfaces a context reset
+       or makes the system re-ask an established fact." Do NOT inline-personate.
+  - REQUIRED model:
+       opus for memory.py (the keep/drop/verbatim policy is the subtle core;
+         a wrong drop causes a silent amnesia regression) and for the repl.py
+         consolidation + test_compaction (the invisible-memory UX is where one
+         leak breaks the illusion).
+       sonnet for facts.py (small loader) and episodic.py (mostly wiring the
+         reused rag engine to a new index_path).
+  - Run in background: yes for the 3 disjoint siblings; no for the consolidation
+    + amnesia gate (it gates the duo verification).
+  - Brief template (memory sibling):
+       "Execute Phase 8 (memory.py) of <PLAN>. Build core/agent/memory.py
+        TranscriptMemory: record turns; compacted_history(threshold) KEEPS
+        recent K turns verbatim (deixis) and for older turns KEEPS tool-call
+        OUTCOMES ({exit_code,summary} as the router already shapes) while
+        DROPPING raw stdout/stderr; threshold is an opaque per-tier knob; pure
+        stdlib, no model calls. Touch only core/agent/memory.py +
+        tests/test_memory.py. Do NOT edit repl.py (consolidation step does).
+        Validation: recent-verbatim + outcome-kept + under-budget asserted.
+        Print one-line summary and exit."
+  - Brief template (episodic sibling):
+       "Execute Phase 8 (episodic.py) of <PLAN>. Build core/agent/episodic.py
+        EpisodicMemory that REUSES rag/retrieve.py (Phase 7) pointed at an index
+        over /var/log/{tier}/audit.jsonl (the audit fields are the corpus).
+        recall(query) -> short past-operation snippets. NO second retriever.
+        I2-clean. Touch only core/agent/episodic.py + tests/test_episodic.py.
+        Validation: a past audited op is recalled via the reused engine; the
+        episodic index_path differs from the docs index_path. Print summary."
+
+---------------------------------------------------------------------
+## 4. DATA MODEL CHANGES
+No database (consistent with original §4). New durable artifacts:
+  - The on-disk vector index (P7) at ERDTREE_CORPUS_INDEX. Footprint budget
+    ~3–5 GB SSD / ~1–2 GB RAM at query.
+  - The per-host facts file (P8) at ERDTREE_FACTS_PATH — a tiny curated text
+    file, human-authored/maintained (operator-curated, not auto-written).
+  - The episodic index (P8) over /var/log/{tier}/audit.jsonl — derived,
+    rebuildable, not a source of truth (the JSONL is).
+The audit JSONL schema (audit.py _SCHEMA_KEYS) is UNCHANGED and is the episodic
+corpus. No migration.
+
+---------------------------------------------------------------------
+## 5. API CONTRACT
+No external HTTP API (I1). Internal contracts:
+  - Tool interface (core/tools/__init__.py) — FROZEN; P6 + the docs tool bind
+    to it unchanged.
+  - synthesize_command (repl.py) -> permissions.classify — the classifier
+    bridge P6 extends. Contract: emit the faithful dangerous command string;
+    NEVER under-state blast radius.
+  - rag.retrieve(query, index_path, k, max_chars) -> [Chunk] — the reusable
+    retrieval signature (P7 Step 1), bound by core/tools/docs.py AND P8
+    core/agent/episodic.py.
+  - TranscriptMemory.compacted_history(threshold) -> list[message] — the
+    history the Repl feeds to assemble().
+
+---------------------------------------------------------------------
+## 6. WORKER / QUEUE CHANGES
+None. The full corpus embed (P7) and the episodic index build (P8) are
+batch/offline jobs, not queues. The corpus embed is DEFERRED-TO-MOSSAD (GPU).
+
+---------------------------------------------------------------------
+## 7. FRONTEND CHANGES
+None — terminal only (I2 / "What This Is NOT"). The product shell (P5) is the
+only surface and is untouched except via the backward-compatible Repl wiring.
+
+---------------------------------------------------------------------
+## 8. TESTING STRATEGY
+Unit (tests/):
+  - P6: test_tools_{network,firewall,users,disk,processes,hardware,files} +
+    test_synthesize_command (the exhaustive (tool,op) -> gate gate).
+  - P7: test_rag_index, test_rag_retrieve, test_tools_docs.
+  - P8: test_memory, test_facts, test_episodic, test_compaction.
+Integration:
+  - test_synthesize_command doubles as the safety-integration gate (every
+    destructive op REFUSE under non-interactive ExecContext).
+  - test_compaction is the immortality/amnesia integration gate.
+Regression (must STAY green):
+  - All existing pre-P6 suites (test_repl, test_router, test_permissions,
+    test_audit, test_dispatch, test_deadman, test_tools_{services,packages,
+    logs,registry}, test_ollama_roundtrip, test_run_bench, test_snapshot,
+    test_main). The memory=None / facts-absent / index-absent defaults keep the
+    built loop byte-compatible.
+NOTE on the host: FINAL.md records that pytest is not installed on the build
+host (pre-existing). The executor must install pytest (or run via
+`python -m unittest` where suites are unittest-based) BEFORE asserting any
+"green" claim — a phase is NOT done on an un-run test. test_dispatch /
+test_deadman are unittest-based and runnable now; the rest assume pytest.
+Manual QA (DEFERRED-TO-MOSSAD, §13): live destructive-op typed-confirm on a
+real box; real corpus retrieval latency on 8 GB cards; immortal session over a
+real multi-hour operator session.
+
+---------------------------------------------------------------------
+## 9. ROLLOUT & OBSERVABILITY
+Feature degradation (not flags): each capability degrades OFF safely when its
+config/artifact is absent — no docs index -> docs tool returns empty valid
+results; no facts file -> empty preamble; memory=None -> pre-P8 behavior. This
+makes P6/P7/P8 shippable incrementally and rollback-trivial (remove the import
+/ unset the env var). The audit JSONL remains the only local observability
+surface (no remote telemetry — I1). Rollback: revert the synthesize_command /
+main.py edits; the tools simply stop being registered.
+
+---------------------------------------------------------------------
+## 10. OPEN QUESTIONS
+  Q1  Vector index backend: sqlite-vec (recommended — server-less, ISO-
+      friendly, reusable for episodic) vs faiss. RESOLVED IN P7 Step 1 by
+      measuring fixture footprint; documented in docs/decisions/0003.
+  Q2  Reranker: ship a small cross-encoder, or use a lexical+score rerank to
+      avoid a second model footprint on 8 GB cards? Decide in P7 Step 1 against
+      the I8 latency budget. Leaning lexical-first for v0.1.
+  Q3  Corpus redistribution: ship the index, or ship the firstboot build recipe?
+      (Original §10 Q4.) Default in this plan: SHIP THE RECIPE; rag/LICENSES.md
+      governs per-source. Final call is a P11 packaging decision.
+  Q4  Episodic recall path: expose through the docs-tool engine (loop calls it)
+      vs a thin internal inject. This plan PREFERS the tool path (keeps "loop
+      decides", reuses I2-cleared surface). Confirm during P8 Step 3.
+  Q5  Compaction threshold + retrieval-k DEFAULTS per tier — set provisional
+      defaults now (Radagon looser, Marika tighter) but final tuning is P9 tier
+      config. Not a blocker.
+
+---------------------------------------------------------------------
+## 11. ESTIMATED EFFORT
+  P6  7 tools (parallel) ............................ L
+      + synthesize_command bridge (P6.8) ........... M  (correctness-critical)
+  P7  RAG-as-tool .................................. L
+      (full corpus embed is XL but DEFERRED-TO-MOSSAD, off critical path)
+  P8  Memory / compaction / episodic ............... L  (UX-subtle core)
+  Critical path: P6.tools(∥) -> P6.8 ; P7.step1 -> P7(∥) ; (P7) -> P8(∥) -> P8.consolidation
+  P6 and P7 fully overlap. P8 trails P7. Heaviest risk: P6.8 (under-gating) and
+  P8 compaction (silent amnesia). Both routed to audit-duo.
+
+---------------------------------------------------------------------
+## 12. EXECUTOR ORCHESTRATION GUIDE
+
+### 12.1 Parallelism map
+  Phase | Execution         | Siblings | Depends on        | Model  | Subagent type
+  P6.t  | PARALLEL FANOUT    | 7        | none (iface frozen)| sonnet/opus* | general-purpose
+  P6.8  | SINGLE (+duo vfy)  | —        | P6.t (all 7)      | opus   | general-purpose
+  P7.1  | SINGLE             | —        | none              | opus   | general-purpose
+  P7.ab | PARALLEL FANOUT    | 2        | P7.1              | sonnet | general-purpose
+  P8.s  | PARALLEL FANOUT    | 3        | P7.ab             | opus/sonnet* | general-purpose
+  P8.c  | SINGLE (+duo vfy)  | —        | P8.s, P6.8        | opus   | general-purpose
+  *split: opus for firewall/users/disk (P6.t) + memory.py (P8.s); sonnet else.
+
+  DAG sketch:
+      P6.t (×7) ──> P6.8 ─────────────┐
+                                       ├──(repl.py single-writer)──> P8.c
+      P7.1 ──> P7.ab (×2) ──> P8.s (×3)┘
+  P6 and P7 run concurrently. The ONLY shared file across P6.8 and P8.c is
+  repl.py — they MUST serialize on it (see 12.2).
+
+### 12.2 Cross-phase work consolidation
+  - repl.py is edited by BOTH P6.8 (synthesize_command branches, incl. the docs
+    read branch) and P8.c (memory-managed history). SINGLE WRITER: run P6.8
+    first, then P8.c, never in parallel — concurrent Edit-tool writes to
+    repl.py will conflict. The docs-tool synthesize branch is folded into P6.8.
+  - main.py is edited by P6.8 (7 tool imports), P7 Step 3 (docs import), and
+    P8.c (memory/facts/episodic wiring). Consolidate ALL main.py edits into the
+    P8.c pass OR sequence them; do not parallelize main.py writers.
+  - rag/retrieve.py is built ONCE in P7 and REUSED by P8 episodic (the whole
+    point of SC-P7.3). Do NOT let P8 build a second retriever — episodic.py
+    imports rag.retrieve and only supplies a different index_path.
+  - The I2 forbidden-term list (core/agent/prompt.py _FORBIDDEN_AI_TERMS) is the
+    canonical filter; every phase's I2 test should import it rather than
+    re-listing terms. Pass this pointer in every brief.
+  - The services.py template is the canonical tool shape; every P6 tool brief
+    points at it rather than restating the interface.
+
+### 12.3 Model-mix budget
+  Across the dispatched units (≈13: 7 tools + P6.8 + P7.1 + 2 P7 + 3 P8 + P8.c):
+    - fable: 0. No unit here is beyond opus. The hardest (P6.8 under-gating, P8
+      compaction policy) are rigorous-correctness, not frontier-novel — opus +
+      audit-duo covers them. Do NOT escalate to fable.
+    - opus: P6.8, firewall/users/disk (3 of the 7 tools), P7.1, memory.py, P8.c
+      (~7 units, ~50%) — the correctness-critical and contract-defining units.
+    - sonnet: the other 4 tools, both P7.ab siblings, facts.py, episodic.py
+      (~6 units, ~45%).
+    - haiku: ~0 — even hardware.py (all-READ) carries the I2 filter + interface
+      conformance; sonnet is the right floor. Do not down-assign to haiku.
+  Rough split: ~50% opus / ~45% sonnet / ~5% haiku-eligible / 0% fable.
+
+### 12.4 Estimated wall-clock
+  Best case (parallel): P6.t(∥7) and P7.1->P7.ab(∥2) overlap; then P6.8; then
+  P8.s(∥3); then P8.c. ≈ 5 sequential "phase-units" on the critical path
+  (P7.1 -> P7.ab -> P8.s -> P8.c, with P6.t -> P6.8 overlapped and joining at
+  the repl.py serialization point). The full corpus embed is backgrounded
+  (DEFERRED-TO-MOSSAD) and off the path.
+  Worst case (strictly serial): ≈ 13 phase-units.
+  Critical path: P7.1 -> P7.ab -> P8.s -> P8.c, gated at the repl.py single-
+  writer join with P6.8.
+
+### 12.5 Failure recovery policy
+  - P6.8 under-gating / P8.c amnesia gate: on audit-duo finding an under-gated
+    destructive op OR a surfaced context-reset -> PAUSE and ESCALATE. These are
+    the irreversible-if-wrong gates; never auto-skip.
+  - P6 tool siblings / P7.ab / P8.s siblings: on a fixtured-test failure ->
+    retry up to 2x with the same subagent (non-flaky expected), then log a
+    deferred-item and continue (one missing non-core tool / a degraded docs
+    index does not block the loop — it degrades OFF safely per §9).
+  - P7.1 backend choice: if BOTH sqlite-vec and faiss blow the footprint budget
+    on the fixture -> PAUSE and ESCALATE (reshapes the index decision).
+  - Any audit-duo split that does not resolve -> PAUSE and ESCALATE with the
+    honest unresolved split (no manufactured consensus).
+  - Default if unspecified: pause and escalate.
+
+### 12.6 Audit trail location
+  Per-phase evidence: lifecycle/archive/audits/erdtree-v0.1/phase-6.md,
+    phase-7.md, phase-8.md (continue the existing FINAL.md convention).
+  Final rollup append: lifecycle/archive/audits/erdtree-v0.1/FINAL.md.
+  Plan stays in pending/ until P6–P11 all complete (per the FINAL.md note).
+  (The PRODUCT's runtime audit log — /var/log/{tier}/audit.jsonl — is separate
+  and is now ALSO the P8 episodic corpus.)
+
+=====================================================================
+## 13. DEFERRED ITEMS (environment-blocked; NOT design gaps)
+  D1  Live destructive-op typed-confirm on a real Rocky/SELinux box (P6) —
+      needs a provisioned target host. The classifier + synthesize gate are
+      fully tested on the dev host with mocked run_subprocess.
+  D2  Full corpus embed + index build (P7) — needs mossad GPU + the source
+      corpora. The recipe (build_corpus.py), license manifest, engine, and a
+      fixture mini-index ship now and are fully tested offline.
+  D3  Real retrieval latency on 8 GB cards (P7 / I8) — measured on mossad.
+  D4  Live multi-hour immortal-session soak (P8) — the policy + amnesia gate
+      are tested deterministically on the dev host; the felt soak is a mossad
+      manual-QA item.
+  D5  pytest install on the build host — the executor must provision pytest (or
+      use python -m unittest) before claiming any pytest suite green (FINAL.md
+      records pytest is absent on the host).
+=====================================================================
+END OF PLAN
+=====================================================================

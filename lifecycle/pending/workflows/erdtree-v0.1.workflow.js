@@ -24,11 +24,11 @@ export const meta = {
   ],
 };
 
-const PLAN = '/Users/aaron_7nh0yzm/erdtree/lifecycle/pending/plans/erdtree-v0.1-buildout.txt';
-const CLAUDE_MD = '/Users/aaron_7nh0yzm/erdtree/CLAUDE.md';
-const PENDING = '/Users/aaron_7nh0yzm/erdtree/lifecycle/pending/plans/erdtree-v0.1-buildout.txt';
-const ARCHIVE_PLAN = '/Users/aaron_7nh0yzm/erdtree/lifecycle/archive/plans/erdtree-v0.1-buildout.txt';
-const AUDIT_DIR = '/Users/aaron_7nh0yzm/erdtree/lifecycle/archive/audits/erdtree-v0.1';
+const PLAN = '/home/aaron/erdtree/lifecycle/pending/plans/erdtree-v0.1-buildout.txt';
+const CLAUDE_MD = '/home/aaron/erdtree/CLAUDE.md';
+const PENDING = '/home/aaron/erdtree/lifecycle/pending/plans/erdtree-v0.1-buildout.txt';
+const ARCHIVE_PLAN = '/home/aaron/erdtree/lifecycle/archive/plans/erdtree-v0.1-buildout.txt';
+const AUDIT_DIR = '/home/aaron/erdtree/lifecycle/archive/audits/erdtree-v0.1';
 
 // Every build/verify agent reads the plan + CLAUDE.md first, threads the invariants,
 // and writes its per-phase evidence to lifecycle/archive/audits/erdtree-v0.1/phase-<id>.md (§12.6).
@@ -99,7 +99,7 @@ log(`Erdtree v0.1 buildout starting. Plan: ${PLAN}`);
   const p0 = await agent(
     preamble('0') +
       `Execute Phase 0 of ${PLAN}. THE HARNESS IS ALREADY DECIDED — do NOT re-evaluate or guess. The reference ` +
-      `substrate is OpenCode (MIT), with REAL source cloned at /Users/aaron_7nh0yzm/erdtree/vendor/opencode; ` +
+      `substrate is OpenCode (MIT), with REAL source cloned at /home/aaron/erdtree/vendor/opencode; ` +
       `Claude Code (vendor/claude-code) is an architectural BLUEPRINT only (proprietary + cloud-bound = NO-GO). ` +
       `FRAMING (critical): the PRODUCT is the Erdtree framework in core/ (context layer, tool abstraction, ` +
       `permission seam, audit, dispatch, memory) — the harness underneath is a SWAPPABLE substrate. Your job is ` +
@@ -154,7 +154,7 @@ log(`Erdtree v0.1 buildout starting. Plan: ${PLAN}`);
       'outbound calls enumerated from actual source, and the live runtime assertion correctly DEFERRED to the ' +
       'installed-image test at P11. The decision docs invent no flags/behaviors and fabricate no live proof.',
     context:
-      `docs/decisions/0001-harness-selection.md + the real source at /Users/aaron_7nh0yzm/erdtree/vendor/opencode. ` +
+      `docs/decisions/0001-harness-selection.md + the real source at /home/aaron/erdtree/vendor/opencode. ` +
       `Verify three things adversarially: (a) the MIT license claim against vendor/opencode/LICENSE; (b) that the ` +
       `egress enumeration matches the ACTUAL source (no invented env vars/flags) and the firewall-floor design ` +
       `genuinely guarantees localhost-only at the OS layer; (c) that no fabricated live proof is presented as ` +
@@ -501,9 +501,9 @@ log(`Erdtree v0.1 buildout starting. Plan: ${PLAN}`);
       'path, tools allowlist, retrieval budget, compaction threshold) and then DE-HARDCODE core/: move every ' +
       'hardcoded tier/product name ("marika"/"radagon") and any Rocky branding out of core/ into tiers/ so ' +
       'ERDTREE_TIER selects everything at runtime (I6/I7/SC7).',
-    scope: '/Users/aaron_7nh0yzm/erdtree/core + /Users/aaron_7nh0yzm/erdtree/tiers + core/agent/tier.py',
+    scope: '/home/aaron/erdtree/core + /home/aaron/erdtree/tiers + core/agent/tier.py',
     verify:
-      'grep -rEi "marika|radagon|rocky" /Users/aaron_7nh0yzm/erdtree/core returns ZERO user-facing hardcoded ' +
+      'grep -rEi "marika|radagon|rocky" /home/aaron/erdtree/core returns ZERO user-facing hardcoded ' +
       'tier/product/Rocky strings, AND pytest tests/test_tier_loader.py passes (ERDTREE_TIER=marika vs radagon ' +
       'loads distinct config). Read CLAUDE.md invariants I6/I7 first.',
   });
