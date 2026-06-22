@@ -93,11 +93,11 @@ Active buildout — the agent loop runs end to end on local models today. Not pr
 - The full agent loop: English in -> tool call -> permission gate -> execute -> audited -> streamed English out, running on local Qwen (3B/7B/14B) via Ollama.
 - The product shell: a login shell with a natural-language mode and a raw-bash mode you toggle between, live token streaming, inline tool steps, and a dead-man fallback that drops you to bash if the engine is unavailable (you're never stuck).
 - Ten system tools (services, packages, logs, network, firewall, users, disk, processes, hardware, files), a hardened permission gate (reads run free, writes confirm, destructive ops need a typed word), and an append-only audit log.
-- Local document retrieval and an invisible-memory layer (rolling compaction + episodic recall) so sessions never hit a context wall.
+- Local document retrieval grounded in a real on-box corpus: an offline orchestrator turns the machine's own man pages and Rocky admin docs into a single durable index, so "how do I open a firewall port" returns the actual `firewall-cmd` passage from the docs — built and queried entirely on the box, no network. Paired with an invisible-memory layer (rolling compaction + episodic recall) so sessions never hit a context wall.
 - A throwaway Rocky 9 container sandbox for testing the Marika (3B) and Radagon (7B-14B) tiers, with a seeded playground and real hardware telemetry (GPU / CPU / sensors / fans).
 - ~1,900 tests green.
 
-**Still ahead:** per-tier configuration plumbing, the model fine-tuning pipeline, and the bootable ISO installer.
+**Still ahead:** per-tier configuration plumbing, the model fine-tuning pipeline, how the reference corpus ships (bundled in the image vs. built on first boot), and the bootable ISO installer.
 
 ---
 
