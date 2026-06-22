@@ -97,14 +97,23 @@ _READ_LINE_MAX = 1000
 # Individual operation implementations
 # ---------------------------------------------------------------------------
 
+_TREE_DEPTH = 2  # how many levels deep a directory listing shows by default
+
+
 def _op_list(args: dict[str, Any]) -> ToolResult:
-    """ls -lah <path>"""
+    """Show a directory as a depth-limited tree (tree -L 2 <path>).
+
+    A tree reads as "structure" far better than a flat ``ls -lah`` dump. If the
+    ``tree`` binary is not installed on the host (exit 127), fall back to
+    ``ls -lah`` so a listing always works.
+    """
     path: str = args.get("path", ".")
-    result = run_subprocess(["ls", "-lah", path])
+    result = run_subprocess(["tree", "-L", str(_TREE_DEPTH), path])
+    if result.exit_code == 127:  # tree not present -> portable fallback
+        result = run_subprocess(["ls", "-lah", path])
     selinux = _maybe_selinux_hint(result.stderr)
     if result.ok:
-        line_count = result.stdout.count("\n")
-        summary = f"Listed {line_count} entries in '{path}'."
+        summary = f"Listed '{path}'."
     else:
         summary = f"Listing '{path}' failed (exit {result.exit_code})."
     return ToolResult(
@@ -426,7 +435,7 @@ FILES_SPEC = ToolSpec(
             op_name="list",
             permission_class=OpClass.READ,
             args=[_PATH_OPT_ARG],
-            description="List directory contents.",
+            description="Show directory contents as a tree.",
         ),
         "read": OpSpec(
             op_name="read",

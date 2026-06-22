@@ -249,6 +249,34 @@ class TestList(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("/no/such/dir", result.summary)
 
+    def test_list_uses_tree_depth_2(self):
+        # "file structure" should be a tree, not a flat ls -lah.
+        mock_fn = MagicMock(return_value=_ok(stdout=".\n└── README.txt\n"))
+        with _patch_fn(mock_fn):
+            _execute("list", {"path": "/root"})
+        cmd = mock_fn.call_args[0][0]
+        self.assertEqual(cmd[0], "tree")
+        self.assertIn("-L", cmd)
+        self.assertIn("2", cmd)
+        self.assertIn("/root", cmd)
+
+    def test_list_falls_back_to_ls_when_tree_absent(self):
+        # If `tree` is not installed (exit 127), fall back to ls -lah so a
+        # listing always works on a bare host.
+        calls = []
+
+        def fake(cmd, *a, **k):
+            calls.append(cmd)
+            if cmd[0] == "tree":
+                return ToolResult(exit_code=127, stdout="", stderr="not found", summary="")
+            return _ok(stdout="total 0\n-rw-r--r-- 1 root root 0 README.txt\n")
+
+        with _patch_fn(MagicMock(side_effect=fake)):
+            result = _execute("list", {"path": "."})
+        self.assertEqual(calls[0][0], "tree")
+        self.assertEqual(calls[1][0], "ls")   # fell back
+        self.assertTrue(result.ok)
+
 
 # ---------------------------------------------------------------------------
 # read operation

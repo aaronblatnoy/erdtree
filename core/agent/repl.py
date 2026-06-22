@@ -634,7 +634,7 @@ def synthesize_command(call: ParsedCall) -> str:
     if call.tool == "files":
         path = str(args.get("path", "") or "")
         if op == "list":
-            return f"ls -lah {path}".strip()
+            return f"tree -L 2 {path}".strip()
         if op == "read":
             return f"cat {path}".strip()
         if op == "stat":
