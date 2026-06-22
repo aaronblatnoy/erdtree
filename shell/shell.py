@@ -80,6 +80,14 @@ _MIDSESSION_FALLBACK_BANNER = (
     + _BANNER_RULE + "\n"
 )
 
+_TIER_UNAVAILABLE_BANNER = (
+    "\n" + _BANNER_RULE + "\n"
+    "  PLAIN BASH MODE — this edition is not available on this host.\n"
+    "  {detail}\n"
+    "  You have a normal bash shell. All standard Linux commands work.\n"
+    + _BANNER_RULE + "\n"
+)
+
 
 # --------------------------------------------------------------------------- #
 # Mode state                                                                   #
@@ -208,8 +216,21 @@ class ProductShell:
             )
             return False
 
+        # Lazy import so shell.py stays importable for the dead-man path even if
+        # the core stack cannot import. If core is unavailable, () matches nothing
+        # and the generic handler below covers the resulting ImportError.
+        try:
+            from core.agent.main import TierUnavailableError as _TierUnavailable
+        except Exception:  # noqa: BLE001
+            _TierUnavailable = ()  # type: ignore[assignment]
+
         try:
             self._repl = self._repl_factory()
+        except _TierUnavailable as exc:  # type: ignore[misc]
+            # An unbuilt / non-operational edition was requested. Refuse clearly,
+            # but never leave the box shell-less (I9): drop to plain bash.
+            self._exec_bash(_TIER_UNAVAILABLE_BANNER.format(detail=str(exc)))
+            return False
         except Exception:  # noqa: BLE001 — build failure must fall back, never crash
             self._exec_bash(
                 _STARTUP_FALLBACK_BANNER.format(

@@ -114,6 +114,71 @@ _assert_no_ai_language(_HOUSE_SYSTEM_PROMPT, "house system prompt")
 
 
 # ------------------------------------------------------------------ #
+# Tool-use discipline block (SC6 / Phase 4)                           #
+# ------------------------------------------------------------------ #
+
+# Tight guidance for small (3B/7B) base weights that tend to narrate
+# instead of acting.  Keep it short — long prompts drown small weights.
+# Every string here must pass the I2 filter (no forbidden terms).
+_TOOL_USE_DISCIPLINE = """\
+Tool-use rules:
+- Call a system operation when the request requires an action on this \
+host or needs a live fact from it (service state, package version, \
+disk usage, log lines, network status).
+- Answer directly in English when the request is a plain question you \
+can answer from the SYSTEM CONTEXT block or from general Linux knowledge.
+- Never narrate that you are about to do something.  Do the work or \
+give the answer — nothing else.
+- Be terse.  One operation at a time when the next step depends on the \
+result of the current one."""
+
+_assert_no_ai_language(_TOOL_USE_DISCIPLINE, "tool-use discipline block")
+
+
+# ------------------------------------------------------------------ #
+# Few-shot examples (SC6 / Phase 4)                                   #
+# ------------------------------------------------------------------ #
+
+# Two tight examples: one that produces a single clean tool call
+# (the services status operation, READ) and one that produces a direct
+# English answer with no tool call.
+#
+# The tool-call example uses the EXACT 0002 §1 wire shape the router
+# validates: operation enum + per-op args, JSON-encoded in "arguments".
+# Do NOT use forbidden terms anywhere in these strings (I2).
+#
+# "FEW-SHOT EXAMPLES" heading and the two examples are assembled into
+# the system message so the base weights see concrete correct formats.
+
+_FEW_SHOT = """\
+DECIDING WHEN TO ACT
+
+Example 1 — a request that needs a live fact from this host:
+  Operator: is nginx running?
+  Perform the services status check on nginx.service, then report what it \
+returns.
+
+Example 2 — a plain question answerable from general Linux knowledge:
+  Operator: what is the default SSH port?
+  Answer directly: Port 22.
+
+Carry out every operation through the tool interface itself. Never write a \
+description of an operation as your reply — perform it."""
+
+_assert_no_ai_language(_FEW_SHOT, "few-shot examples")
+
+# Structured representation of the tool-call few-shot example args.
+# The wire-shape parity test (test_prompt_fewshot.py) parses this and
+# runs it through router.validate_arguments to assert the example
+# teaches the correct 0002 §1 format and does not drift.
+# Shape: {"tool": <tool name>, "arguments": <dict matching §1 schema>}
+_FEW_SHOT_TOOL_CALL_EXAMPLE: dict = {
+    "tool": "services",
+    "arguments": {"operation": "status", "unit": "nginx.service"},
+}
+
+
+# ------------------------------------------------------------------ #
 # Public interface                                                     #
 # ------------------------------------------------------------------ #
 
@@ -190,6 +255,12 @@ def assemble_messages(config: PromptConfig) -> list[dict]:
     """
     # Build the system message
     system_parts: list[str] = [_HOUSE_SYSTEM_PROMPT]
+
+    # Tool-use discipline + few-shot (SC6 / Phase 4) — always included;
+    # kept after the house prompt and before context so small weights see
+    # the rules close to the live context they reason over.
+    system_parts.append(_TOOL_USE_DISCIPLINE)
+    system_parts.append(_FEW_SHOT)
 
     # Tier addendum (I6: tier text comes from outside; core/ is name-free)
     if config.tier_prompt.strip():

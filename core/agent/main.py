@@ -78,8 +78,12 @@ except Exception:  # noqa: BLE001 — docs is optional; absence must never crash
 _TIER_DEFAULTS: dict[str, dict[str, str]] = {
     "marika": {"model": "qwen2.5:3b-instruct-q4_K_M"},
     "radagon": {"model": "qwen2.5:7b-instruct-q4_K_M"},
-    "radahn": {"model": "qwen2.5:14b-instruct-q4_K_M"},
 }
+# Only these tiers are operational. The larger tiers (radahn = massive /
+# dedicated-infra, starscourge) run on models that are NOT built — they must be
+# entirely unreachable, never silently resolved to a smaller model. Requesting a
+# non-operational or unknown tier is REFUSED outright (no fallback).
+_OPERATIONAL_TIERS = frozenset(_TIER_DEFAULTS)  # {"marika", "radagon"}
 _DEFAULT_TIER = "radagon"  # PRIMARY tier per CLAUDE.md; a default, not a hardcode.
 _DEFAULT_BASE_URL = "http://localhost:11434"
 _DEFAULT_AUDIT_LOG = "/var/log/erdtree/audit.jsonl"
@@ -98,6 +102,12 @@ def _int_env(name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
+
+
+class TierUnavailableError(RuntimeError):
+    """Raised when ERDTREE_TIER names a tier that is not available on this host —
+    an unbuilt tier (radahn/starscourge) or an unknown value. The config layer
+    refuses it outright rather than silently falling back to another tier."""
 
 
 @dataclass
@@ -121,7 +131,13 @@ class AppConfig:
     @classmethod
     def from_env(cls, *, interactive: bool = True) -> "AppConfig":
         tier = os.environ.get("ERDTREE_TIER", _DEFAULT_TIER).strip() or _DEFAULT_TIER
-        defaults = _TIER_DEFAULTS.get(tier, _TIER_DEFAULTS[_DEFAULT_TIER])
+        if tier not in _OPERATIONAL_TIERS:
+            # A non-operational tier (radahn/starscourge) or an unknown value is
+            # refused — never silently resolved to a different tier's model.
+            raise TierUnavailableError(
+                f"Tier {tier!r} is not available on this host."
+            )
+        defaults = _TIER_DEFAULTS[tier]
         model = os.environ.get("ERDTREE_MODEL", defaults["model"]).strip()
         base_url = os.environ.get("ERDTREE_BASE_URL", _DEFAULT_BASE_URL).strip()
         audit_log_path = os.environ.get("ERDTREE_AUDIT_LOG", _DEFAULT_AUDIT_LOG).strip()
@@ -163,22 +179,62 @@ def _resolve_audit_path(path: str) -> str:
         return str(fallback)
 
 
+def _stream_enabled() -> bool:
+    """Decide whether the live path streams tokens incrementally.
+
+    Default ON (P6): the live ConsoleIO path renders the answer live, token by
+    token, so simple requests feel instant (I8). Setting ERDTREE_STREAM to a
+    falsey value ("0"/"off"/"false"/"no") forces the BUFFERED path — the same
+    full-answer-at-once behavior the loop had before streaming landed. Read
+    OPAQUELY and never raises (I9): any unrecognized value -> the default.
+    """
+    raw = os.environ.get("ERDTREE_STREAM", "").strip().lower()
+    if not raw:
+        return True  # default ON for the live path
+    return raw not in ("0", "off", "false", "no")
+
+
 def build_repl(config: AppConfig) -> Repl:
     """Wire collector -> context -> prompt -> ollama -> router -> repl.
 
     Constructs the live Ollama responder (I1 localhost-asserted at construction).
     Raises the underlying EgressViolation only if a non-localhost endpoint was
     configured — :func:`main` translates that into a clear message.
+
+    LIVE PATH STREAMING (P6): the default responder is the streaming responder
+    (core.model.ollama.stream_responder) whose on_delta sink is the ConsoleIO's
+    render_delta, so the English answer appears live. It returns the SAME
+    AssembledResponse chat() would assemble from the same chunks (parity proven
+    in tests/test_streaming.py), so the router/gate/audit see the identical
+    assembled turn (SC4 — streaming is PRESENTATION ONLY). It opens NO new
+    socket and names NO new host: it drains client.stream(), loopback-asserted
+    at the client's construction (I1). ERDTREE_STREAM=0 falls back to the
+    buffered chat() closure (SC5/back-compat).
     """
-    from core.model.ollama import OllamaClient, TierConfig
+    from core.model.ollama import OllamaClient, TierConfig, stream_responder
 
     tier_cfg = TierConfig(config.base_url, config.model)
     client = OllamaClient(tier_cfg)  # asserts localhost (I1)
 
-    def responder(messages, tools):
-        # chat() blocks until [DONE] and returns an AssembledResponse with
-        # .content / .tool_calls (the shape Repl expects).
-        return client.chat(messages, tools=tools, tool_choice="auto")
+    # Build the IO first so its render_delta can be the streaming sink.
+    io = ConsoleIO(interactive=config.interactive)
+
+    if _stream_enabled():
+        # The streaming responder OWNS the delta sink (the seam): run_turn stays
+        # unaware of streaming. on_delta -> io.render_delta renders each content
+        # token live; _safe_emit (in stream_responder) wraps the sink so a
+        # rendering fault degrades to no-stream and never aborts assembly (SC4).
+        _stream = stream_responder(client, on_delta=io.render_delta)
+
+        def responder(messages, tools):
+            # Same shape Repl expects: returns an AssembledResponse with
+            # .content / .tool_calls, identical to chat() over the same chunks.
+            return _stream(messages, tools=tools, tool_choice="auto")
+    else:
+        def responder(messages, tools):
+            # Buffered path (ERDTREE_STREAM=0): chat() blocks until [DONE] and
+            # returns the same AssembledResponse the streaming responder does.
+            return client.chat(messages, tools=tools, tool_choice="auto")
 
     audit_path = _resolve_audit_path(config.audit_log_path)
     audit = AuditLog(audit_path)
@@ -200,7 +256,7 @@ def build_repl(config: AppConfig) -> Repl:
         responder=responder,
         audit=audit,
         context=context,
-        io=ConsoleIO(interactive=config.interactive),
+        io=io,
         tier_label=config.tier,
         tier_prompt=config.tier_prompt,
         interactive=config.interactive,

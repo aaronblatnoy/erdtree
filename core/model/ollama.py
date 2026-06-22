@@ -32,7 +32,7 @@ import json
 import re
 import socket
 from dataclasses import dataclass, field
-from typing import Generator, Iterable, Optional
+from typing import Callable, Generator, Iterable, Optional
 from urllib.parse import urlparse
 
 
@@ -229,6 +229,62 @@ def _parse_chunk(payload: str) -> StreamChunk:
 
 
 # --------------------------------------------------------------------------- #
+# Shared stream-assembly helper                                                #
+# --------------------------------------------------------------------------- #
+
+class _StreamAccumulator:
+    """
+    Single source of truth for collapsing a sequence of StreamChunks into an
+    AssembledResponse (0002 §4).
+
+    Both chat() (buffered path) and stream_responder() (streaming path) feed
+    chunks through ONE instance of this accumulator, guaranteeing the two
+    paths assemble a tool call / English answer byte-identically.  Forking
+    this logic risks chat()/stream divergence — see plan §3 Phase 1.
+    """
+
+    def __init__(self) -> None:
+        self._content_parts: list[str] = []
+        # index -> ToolCallDelta accumulator
+        self._tc_accum: dict[int, ToolCallDelta] = {}
+        self._finish_reason: str = ""
+
+    def feed(self, chunk: StreamChunk) -> None:
+        """Fold one StreamChunk into the running assembly."""
+        if chunk.content_delta:
+            self._content_parts.append(chunk.content_delta)
+
+        for delta in chunk.tool_call_deltas:
+            if delta.index not in self._tc_accum:
+                self._tc_accum[delta.index] = ToolCallDelta(index=delta.index)
+            acc = self._tc_accum[delta.index]
+            if delta.id:
+                acc.id = delta.id
+            if delta.name:
+                acc.name = delta.name
+            acc.arguments += delta.arguments
+
+        if chunk.finish_reason:
+            self._finish_reason = chunk.finish_reason
+
+    def assemble(self) -> AssembledResponse:
+        """Materialize the accumulated chunks into an AssembledResponse."""
+        assembled_tcs = []
+        for idx in sorted(self._tc_accum):
+            acc = self._tc_accum[idx]
+            assembled_tcs.append({
+                "id": acc.id,
+                "name": acc.name,
+                "arguments": acc.arguments,
+            })
+        return AssembledResponse(
+            content="".join(self._content_parts),
+            tool_calls=assembled_tcs,
+            finish_reason=self._finish_reason,
+        )
+
+
+# --------------------------------------------------------------------------- #
 # Core client                                                                  #
 # --------------------------------------------------------------------------- #
 
@@ -304,45 +360,13 @@ class OllamaClient:
         """
         Blocking convenience wrapper: streams and assembles the full response.
         """
-        content_parts: list[str] = []
-        # Accumulator dict: index -> ToolCallDelta
-        tc_accum: dict[int, ToolCallDelta] = {}
-        finish_reason = ""
-
+        accum = _StreamAccumulator()
         for chunk in self.stream(
             messages, tools=tools, tool_choice=tool_choice,
             _http_factory=_http_factory
         ):
-            if chunk.content_delta:
-                content_parts.append(chunk.content_delta)
-
-            for delta in chunk.tool_call_deltas:
-                if delta.index not in tc_accum:
-                    tc_accum[delta.index] = ToolCallDelta(index=delta.index)
-                acc = tc_accum[delta.index]
-                if delta.id:
-                    acc.id = delta.id
-                if delta.name:
-                    acc.name = delta.name
-                acc.arguments += delta.arguments
-
-            if chunk.finish_reason:
-                finish_reason = chunk.finish_reason
-
-        assembled_tcs = []
-        for idx in sorted(tc_accum):
-            acc = tc_accum[idx]
-            assembled_tcs.append({
-                "id": acc.id,
-                "name": acc.name,
-                "arguments": acc.arguments,
-            })
-
-        return AssembledResponse(
-            content="".join(content_parts),
-            tool_calls=assembled_tcs,
-            finish_reason=finish_reason,
-        )
+            accum.feed(chunk)
+        return accum.assemble()
 
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
@@ -398,3 +422,91 @@ class OllamaClient:
                 return
             chunk = _parse_chunk(payload)
             yield chunk
+
+
+# --------------------------------------------------------------------------- #
+# Streaming responder adapter (additive — PRESENTATION ONLY, see SC4)          #
+# --------------------------------------------------------------------------- #
+#
+# The streaming responder is a callable (messages, tools) -> AssembledResponse
+# that is interchangeable with OllamaClient.chat() for the loop's purposes: it
+# returns the SAME assembled turn (the router/gate/audit see what they see
+# today — SC4), while ALSO emitting each content token to an injected on_delta
+# sink BEFORE returning, so the terminal can render incrementally (I8).
+#
+# It opens NO new socket and names NO new host: it drains client.stream(),
+# which already asserts localhost at the client's construction (I1).  A
+# streamed token is content ONLY and never represents an unconfirmed write.
+
+# A responder is any callable taking (messages, tools, [tool_choice]) and
+# returning an AssembledResponse — the same shape main.py's buffered closure
+# returns.
+Responder = Callable[..., AssembledResponse]
+
+# An on_delta sink receives one content token (str) at a time.  It must never
+# raise into the loop; the responder wraps it so a rendering fault degrades to
+# no-stream and never aborts assembly.
+OnDelta = Callable[[str], None]
+
+
+def _safe_emit(on_delta: Optional[OnDelta], token: str) -> bool:
+    """
+    Call *on_delta(token)*, swallowing ANY exception so a rendering error can
+    never abort stream assembly (plan §3 Phase 1 edge case).
+
+    Returns False once the sink has faulted (or is absent) so the caller can
+    stop attempting further emits and degrade to no-stream for the rest of the
+    turn; True while the sink is still healthy.
+    """
+    if on_delta is None:
+        return False
+    try:
+        on_delta(token)
+        return True
+    except Exception:
+        # Degrade to no-stream: presentation faults never corrupt the turn.
+        return False
+
+
+def stream_responder(
+    client: OllamaClient,
+    on_delta: Optional[OnDelta] = None,
+) -> Responder:
+    """
+    Build a streaming responder bound to *client* and *on_delta*.
+
+    The returned callable has the SAME signature/return as client.chat():
+    (messages, tools=None, tool_choice="auto", *, _http_factory=None)
+    -> AssembledResponse.  Internally it drains client.stream() through the
+    SHARED _StreamAccumulator (the exact assembly chat() uses — no fork), and
+    for each content_delta calls on_delta(token) BEFORE the AssembledResponse
+    is returned.  The assembled result is byte-identical to what chat() would
+    produce from the same chunks (parity — proven in tests/test_streaming.py).
+
+    on_delta is optional and wrapped by _safe_emit: a None sink (or one that
+    raises) simply degrades to today's buffered behavior — assembly still
+    completes and the same AssembledResponse is returned.  I1: this opens no
+    socket; client.stream() is the only transport and it is loopback-asserted
+    at the client's construction.
+    """
+    def respond(
+        messages: list[dict],
+        tools: Optional[list[dict]] = None,
+        tool_choice: str = "auto",
+        *,
+        _http_factory=None,
+    ) -> AssembledResponse:
+        accum = _StreamAccumulator()
+        sink_ok = on_delta is not None
+        for chunk in client.stream(
+            messages, tools=tools, tool_choice=tool_choice,
+            _http_factory=_http_factory,
+        ):
+            # Emit content tokens BEFORE returning so the terminal renders
+            # incrementally.  Content is presentation only (SC4).
+            if chunk.content_delta and sink_ok:
+                sink_ok = _safe_emit(on_delta, chunk.content_delta)
+            accum.feed(chunk)
+        return accum.assemble()
+
+    return respond

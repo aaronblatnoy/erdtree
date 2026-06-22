@@ -63,20 +63,78 @@ from core.tools import ToolRegistry, ToolResult
 # --------------------------------------------------------------------------- #
 
 class ReplIO(Protocol):
-    """Everything the loop needs from the terminal. Injected for tests."""
+    """Everything the loop needs from the terminal. Injected for tests.
+
+    The three methods below are the BASE contract every IO implements.
+
+    OPTIONAL incremental-render hooks (feature-detected by the loop via the
+    responder's delta sink — run_turn itself never calls them directly):
+
+      render_delta(token)      -> stream one content token live (no newline)
+      tool_step(text)          -> announce a step about to run        (P3)
+      tool_step_result(text)   -> report a step's outcome             (P3)
+
+    Any IO implementing only render()/confirm()/confirm_typed() (today's
+    contract) still works: the streaming responder owns the delta sink, and a
+    buffered responder never produces deltas, so behavior is byte-identical to
+    the pre-streaming path when these hooks are absent.
+    """
 
     def render(self, text: str) -> None: ...
     def confirm(self, prompt: str) -> bool: ...
     def confirm_typed(self, prompt: str, word: str) -> bool: ...
 
+    # Optional (no-op default in callers; ConsoleIO implements render_delta).
+    def render_delta(self, token: str) -> None: ...
+    def tool_step(self, text: str) -> None: ...
+    def tool_step_result(self, text: str) -> None: ...
+
 
 class ConsoleIO:
-    """Default IO: plain stdin/stdout. No AI/LLM language anywhere (I2)."""
+    """Default IO: plain stdin/stdout. No AI/LLM language anywhere (I2).
+
+    Incremental rendering: when a streaming responder is wired, each content
+    token arrives via render_delta() and is written with NO trailing newline +
+    an explicit flush so the answer appears live. render() then closes the
+    streamed line WITHOUT re-printing it (NO DOUBLE-RENDER). When no token was
+    streamed (the buffered path), render() prints the full English answer
+    exactly as it does today — byte-identical.
+    """
 
     def __init__(self, *, interactive: bool = True) -> None:
         self.interactive = interactive
+        # Accumulates content already emitted token-by-token this turn so
+        # render() knows not to re-print it.  Empty -> buffered path.
+        self._streamed = ""
+
+    def render_delta(self, token: str) -> None:
+        if token:
+            self._streamed += token
+            print(token, end="", flush=True)
+
+    def tool_step(self, text: str) -> None:
+        # A live "running: <cmd>" line shown just before a cleared op runs.
+        # Dim inline so it reads as harness chatter, not the answer (P3).
+        if text:
+            print(f"\x1b[2m{text}\x1b[0m", flush=True)
+
+    def tool_step_result(self, text: str) -> None:
+        # A terse status line after a step ("done", "exit 0", "not run").
+        if text:
+            print(f"\x1b[2m{text}\x1b[0m", flush=True)
 
     def render(self, text: str) -> None:
+        # If this exact text was already streamed token-by-token, do NOT
+        # re-print it: just close the line so the next prompt starts fresh.
+        if self._streamed:
+            already = self._streamed
+            self._streamed = ""
+            if text == already or not text:
+                print()  # newline only — the tokens are already on screen
+                return
+            # Divergent buffered text after a partial stream: close the
+            # streamed line, then print the authoritative full answer.
+            print()
         if text:
             print(text)
 
@@ -503,7 +561,11 @@ class Repl:
             if verdict.kind is TurnKind.ENGLISH:
                 outcome.final_text = verdict.content
                 outcome.ended_in_english = True
-                self._io.render(verdict.content)
+                # Presentation only. A faulting render (e.g. a broken streaming
+                # sink that raised partway and left render() in a bad state)
+                # must NEVER kill the turn or skip the memory/audit bookkeeping
+                # below (mirrors the _safe_emit wrap on the delta sink, P1).
+                self._safe_render(verdict.content)
                 break
 
             if verdict.kind is TurnKind.MISS:
@@ -598,12 +660,21 @@ class Repl:
                     result=gate_note,
                 )
                 outcome.audit_records += 1
+                # Display ONLY (SC4): a refused/declined op NEVER gets a
+                # "running:" line (I3 honesty — we never imply an unconfirmed
+                # write ran). Report a neutral "not run" status instead.
+                self._emit_tool_step_result("not run")
                 # Tell the model the op was not performed so it can adapt.
                 messages.append(self._router.tool_result_message(
                     call.call_id,
                     ToolResult(exit_code=2, stdout="", stderr="", summary=gate_note),
                 ))
                 continue
+
+            # Gate cleared -> the op is ACTUALLY going to run. Announce it now
+            # (display ONLY, SC4 — zero audit, no gate change). synthesize_command
+            # is already an I2-clean shell argv.
+            self._emit_tool_step("running: " + command)
 
             # Gate cleared -> execute and audit the real op.
             result = self._safe_dispatch(call)
@@ -621,6 +692,10 @@ class Repl:
                 result=result.summary,
             )
             outcome.audit_records += 1
+
+            # Display ONLY (SC4): terse status AFTER dispatch + audit. This adds
+            # zero audit records and does not alter audit ordering.
+            self._emit_tool_step_result(self._step_status(result))
 
             # I5: a successful mutation changes the box — invalidate context.
             if decision.op_class is not OpClass.READ and result.ok:
@@ -664,10 +739,61 @@ class Repl:
     # Helpers                                                             #
     # ------------------------------------------------------------------ #
 
+    def _safe_render(self, text: str) -> None:
+        """Render the final English answer; a presentation fault never aborts.
+
+        Rendering is presentation ONLY (SC4). If the IO's render() raises — for
+        instance a streaming sink that faulted mid-stream — the turn must still
+        complete and record its memory/audit bookkeeping. We swallow the fault
+        here exactly as the delta sink is wrapped (P1), never the audit path.
+        """
+        try:
+            self._io.render(text)
+        except Exception:  # noqa: BLE001 — presentation never breaks a turn
+            pass
+
     def _advertised_tools(self) -> list[dict]:
         from core.agent.prompt import build_tool_list
 
         return build_tool_list(self._router.advertised_schemas())
+
+    # ------------------------------------------------------------------ #
+    # Live tool-step display (P3) — PRESENTATION ONLY (SC4).               #
+    # These NEVER write audit, NEVER touch the gate, and degrade to a      #
+    # no-op when the IO does not implement the optional hook (BACK-COMPAT  #
+    # with today's render()/confirm()/confirm_typed()-only IOs).           #
+    # ------------------------------------------------------------------ #
+    def _emit_tool_step(self, text: str) -> None:
+        hook = getattr(self._io, "tool_step", None)
+        if hook is None:
+            return
+        try:
+            hook(text)
+        except Exception:  # noqa: BLE001 — display never breaks a turn
+            pass
+
+    def _emit_tool_step_result(self, text: str) -> None:
+        hook = getattr(self._io, "tool_step_result", None)
+        if hook is None:
+            return
+        try:
+            hook(text)
+        except Exception:  # noqa: BLE001 — display never breaks a turn
+            pass
+
+    @staticmethod
+    def _step_status(result: ToolResult) -> str:
+        """Terse, I2-clean status for a dispatched op, derived from ToolResult.
+
+        Speaks as a command interface ("done", "exit 0", "exit 1") — never as
+        an actor. No AI/LLM/model/agent language (I2).
+        """
+        code = result.exit_code
+        if code is None:
+            return "not run"
+        if code == 0:
+            return "done"
+        return f"exit {code}"
 
     def _safe_dispatch(self, call: ParsedCall) -> ToolResult:
         """Dispatch a validated call; turn any execution error into a ToolResult.

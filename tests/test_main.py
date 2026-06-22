@@ -15,6 +15,8 @@ Coverage:
 
 from __future__ import annotations
 
+import pytest
+
 import core.agent.main as main
 from core.agent.main import AppConfig
 
@@ -41,13 +43,36 @@ def test_model_env_override(monkeypatch):
     assert cfg.model == "qwen2.5:14b-instruct-q4_K_M"
 
 
-def test_unknown_tier_falls_back_to_default(monkeypatch):
+def test_radahn_is_refused(monkeypatch):
+    # radahn is the massive / dedicated-infra tier; its model is not built and it
+    # must be entirely unreachable — refused, never resolved to a smaller model.
+    monkeypatch.setenv("ERDTREE_TIER", "radahn")
+    monkeypatch.delenv("ERDTREE_MODEL", raising=False)
+    with pytest.raises(main.TierUnavailableError):
+        AppConfig.from_env()
+
+
+def test_starscourge_is_refused(monkeypatch):
+    monkeypatch.setenv("ERDTREE_TIER", "starscourge")
+    monkeypatch.delenv("ERDTREE_MODEL", raising=False)
+    with pytest.raises(main.TierUnavailableError):
+        AppConfig.from_env()
+
+
+def test_unknown_tier_is_refused_not_silently_run(monkeypatch):
+    # A typo / unknown tier must NOT silently fall back to radagon's model.
     monkeypatch.setenv("ERDTREE_TIER", "no-such-tier")
     monkeypatch.delenv("ERDTREE_MODEL", raising=False)
-    cfg = AppConfig.from_env()
-    # Unknown tier label is kept (opaque), but the model bucket defaults safely.
-    assert cfg.tier == "no-such-tier"
-    assert cfg.model  # a sensible default, not empty
+    with pytest.raises(main.TierUnavailableError):
+        AppConfig.from_env()
+
+
+def test_radahn_refused_even_with_model_override(monkeypatch):
+    # Even if someone supplies a model, a non-operational tier stays refused.
+    monkeypatch.setenv("ERDTREE_TIER", "radahn")
+    monkeypatch.setenv("ERDTREE_MODEL", "qwen2.5:14b")
+    with pytest.raises(main.TierUnavailableError):
+        AppConfig.from_env()
 
 
 def test_non_localhost_endpoint_is_clean_message(monkeypatch, capsys):

@@ -1,0 +1,834 @@
+=====================================================================
+BUILDOUT PHASE PLAN: Harness UX Upgrade — Streaming, Live Tool Steps,
+                      Small-Model Prompt Discipline, Tighter Self-Correction
+Generated: 2026-06-21
+Scope: Make Erdtree's OWN harness (core/agent/) FEEL as good as Claude
+       Code / OpenCode — streamed output, live tool-call display, a
+       small-model-tuned tool-use prompt, and a tighter self-correcting
+       re-ask — WITHOUT touching the permission gate, audit spine, or
+       dead-man fallback, and WITHOUT any new egress.
+=====================================================================
+
+## 0. CONTEXT & GOALS
+
+### Problem statement
+The 7B tier (Radagon, PRIMARY) was run live and the FELT experience is
+rough. The structural harness is solid (1795 tests collected) but:
+  - Model text lands as one buffered wall — no streaming, no token-by-
+    token feel. The transport ALREADY streams (core/model/ollama.py
+    `stream()` yields StreamChunk deltas, ~line 263) but the live path
+    collapses them: `chat()` (~lines 296-345) does
+    `content="".join(content_parts)` and only THEN does the loop see it.
+    The buffering is in OUR code, one layer above a working stream.
+  - No feedback while a tool runs — the user stares at nothing between
+    "submit" and "wall of text".
+  - The small base model flails: clumsy tool picks, verbosity, narration,
+    malformed/loose tool calls.
+
+This is a HARNESS-CRAFT problem, not a model problem. Claude Code /
+OpenCode make weak-feeling interactions feel good through streaming,
+inline step display, disciplined prompts, and instructive self-correction.
+Per docs/decisions/0001-framework.md those two are REFERENCE/INSPIRATION
+ONLY — never imported, never shipped. We are making OUR harness feel like
+theirs, in clean-room code under core/agent/.
+
+### Success criteria (measurable)
+  SC1  Model English text renders INCREMENTALLY. Provable on the dev host:
+       a scripted CHUNKED responder feeds N content deltas; the IO double
+       records >= N incremental render calls (not one joined string).
+  SC2  When a tool is dispatched, a live "running: <cmd>" line appears
+       BEFORE the result and a result/status line appears after — both
+       I2-clean (pass _FORBIDDEN_AI_TERMS).
+  SC3  Every NEW user-facing string (progress lines, tool-run display,
+       any spinner/status text, new re-ask wording) passes the I2 filter
+       (core/agent/prompt.py `_AI_PATTERN`). A test asserts this over the
+       full new-string inventory.
+  SC4  The permission gate, audit records, and dead-man fallback are
+       BEHAVIORALLY UNCHANGED: a streamed token NEVER represents an
+       unconfirmed write; the gate fires at the same point on the same
+       inputs; audit record count/content is identical to pre-change for
+       the same scripted turns. Pinned by a regression/golden test.
+  SC5  The existing buffered responder + ConsoleIO path still works
+       unchanged (backward compatible). Full suite stays green
+       (>= 1795 tests; new tests added).
+  SC6  Small-model discipline: the house prompt carries explicit
+       when-to-call-a-tool guidance + a short few-shot tuned for a 7B/3B,
+       and the re-ask is tighter/more instructive. Validity is measured by
+       bench/ (separate track) — this plan delivers the PROMPT + the
+       TESTABLE re-ask wording, not a fine-tune.
+
+### Non-goals (explicitly out of scope)
+  - No model fine-tuning. Live-model "feel" on the 7B/14B is partly
+    DEFERRED to the benchmark/fine-tune track (bench/, Phase-10 per 0001).
+    This plan makes the HARNESS good enough that a weak model feels good;
+    it does not raise raw model validity numbers.
+  - No live Ollama round-trip claim. The dev host has no Ollama/Linux
+    (DEV-HOST NOTE in ollama.py). Live streaming feel is reasoned + unit-
+    proven with doubles; any real round-trip is DEFERRED-TO-MOSSAD.
+  - No change to the 0002 wire contract, the tool-call protocol, the
+    permission classifier (permissions.py is BYTE-UNTOUCHED), or the audit
+    schema.
+  - No new dependency. stdlib only (the project's stated constraint;
+    ollama.py uses urllib by design).
+  - No async/event-loop rewrite. The loop stays synchronous; streaming is
+    a synchronous generator drained in the loop.
+
+### Assumptions made
+  A1  The model seam stays the injected `responder` callable. We ADD a
+      second, OPTIONAL streaming seam rather than replacing it, so every
+      existing test that injects a ScriptedResponder keeps passing
+      (test_repl.py). The buffered `responder` remains the default.
+  A2  ReplIO is a Protocol (repl.py:65). We extend it with an OPTIONAL
+      incremental hook; ConsoleIO and FakeIO (test_repl.py:54) implement
+      it; absence of the hook degrades to today's `render(text)` behavior.
+  A3  Streaming is presentation-only. The loop still assembles a full
+      AssembledResponse-equivalent BEFORE routing/gating/dispatch. Tokens
+      are surfaced to the IO as they arrive, but the router/gate/audit see
+      the SAME assembled turn they see today. This is the load-bearing
+      safety property behind SC4.
+  A4  "Live tool-call display" shows the SYNTHESIZED command string
+      (synthesize_command, repl.py:137) — which is already I2-clean shell
+      argv (systemctl/dnf/...) — not the tool name or any model framing.
+  A5  Few-shot examples go in the house system prompt (prompt.py); they
+      are checked by `_assert_no_ai_language` at import time like the
+      existing _HOUSE_SYSTEM_PROMPT (prompt.py:113), so any I2 leak fails
+      the build immediately.
+  A6  Tests run via /home/aaron/erdtree/.venv/bin/python -m pytest (NOT
+      system python3).
+
+---
+
+## 1. ARCHITECTURE OVERVIEW
+
+### How this fits
+Three independent quality dimensions over the SAME loop spine
+(repl.py `run_turn`):
+
+  (1) STREAMING SPINE  — thread `stream()`'s deltas to the IO without
+      collapsing them in our code. Touches ollama.py (add a streaming-
+      capable responder), repl.py (drain a stream while assembling),
+      ReplIO (incremental hook), shell/main wiring.
+  (2) LIVE TOOL STEPS  — surface the gate decision + synthesized command
+      + result as inline status lines via the IO. Sits in _dispatch_calls.
+  (3) PROMPT DISCIPLINE — prose-only work in prompt.py (when-to-call
+      guidance, few-shot) + tighter re-ask wording in router.py.
+
+Dimension (1) is the SPINE; (2) depends on the IO surface (1) introduces.
+Dimension (3) is INDEPENDENT (pure prose/string work) and can land in
+parallel with (1)/(2).
+
+### Affected services
+  - core/model/ollama.py   — add a streaming responder adapter (additive)
+  - core/agent/repl.py     — ReplIO incremental hook + stream drain +
+                              tool-step display (SINGLE-WRITER, serialize)
+  - core/agent/prompt.py   — tool-use guidance + few-shot (prose)
+  - core/agent/router.py   — tighter, more instructive re-ask wording
+  - core/agent/main.py     — wire the streaming responder + streaming IO
+  - shell/shell.py         — unchanged in behavior; verify the dead-man
+                              guard still wraps the (now-streaming) turn
+
+### Data flow (after this plan)
+```
+user line
+  -> shell.run_turn / Repl.run_turn
+  -> assemble(prompt + few-shot + context + tools)        [prompt.py]
+  -> STREAMING responder: for chunk in client.stream(...):
+        if chunk.content_delta -> io.render_delta(token)  [NEW hook]   *** presentation only
+        accumulate content + tool_call_deltas
+     -> returns ONE AssembledResponse (same shape as today)            *** router sees assembled turn
+  -> router.route(content, tool_calls)                    [router.py]
+  -> per call: synthesize_command -> permissions.classify  [UNCHANGED gate]
+        io.tool_step("running: <cmd>")                    [NEW, I2-clean]
+        gate resolve -> dispatch -> audit.write           [UNCHANGED]
+        io.tool_step_result(status)                       [NEW, I2-clean]
+  -> tool results fed back; loop; English answer streams to terminal
+```
+The gate/audit/dead-man boxes are byte-untouched. The only NEW edges are
+the dotted "presentation only" render_delta + tool_step lines.
+
+### Invariants this plan must preserve
+  I1  Streaming still talks ONLY to localhost Ollama. ollama.py already
+      asserts loopback at construction (_assert_localhost). The streaming
+      responder reuses the SAME OllamaClient — no new socket, no new host.
+  I2  Every NEW user-facing string passes _FORBIDDEN_AI_TERMS (no
+      ai/llm/model/agent/agentic/inference/ollama/...). Enforced by test
+      and, for prompt strings, by _assert_no_ai_language at import.
+  I3  Permission gate resolved BEFORE every write/destructive dispatch,
+      via the UNCHANGED permissions.classify. A streamed token is content
+      ONLY; tool calls are assembled and gated exactly as today. NEVER
+      stream a write's effect before the gate clears.
+  I4  EVERY attempted op writes exactly one audit record — unchanged.
+      tool-step display is NOT an audit substitute and does not alter
+      audit calls.
+  I9  Dead-man fallback (shell/shell.py) byte-untouched; streaming must
+      not introduce a new unbounded wait or swallow ConnectionError.
+
+---
+
+## 2. AFFECTED SURFACE AREA
+
+### Files to create
+  - tests/test_streaming.py
+        SC1 (incremental render via chunked responder), SC4 (gate/audit
+        invariance under streaming), streaming-responder-double tests.
+  - tests/test_tool_step_display.py
+        SC2 (running/result lines emitted around dispatch) + I2 of those
+        strings.
+  - tests/test_prompt_fewshot.py
+        SC6 prose: few-shot present, tool-use guidance present, whole
+        assembled prompt still passes _assert_no_ai_language.
+  (Optionally fold the above into existing test_repl.py / test_ollama_
+   roundtrip.py / test_prompt files — see each phase's note. New files
+   keep the diff legible; either is acceptable.)
+
+### Files to modify
+  - core/model/ollama.py
+        ADD a streaming responder adapter (e.g. `stream_responder(client)`
+        or a `StreamingResponder` callable) that drains client.stream(),
+        forwards content deltas to a sink callback, and returns an
+        AssembledResponse — i.e. chat() PLUS an on_delta hook. chat()
+        itself stays as-is (backward compat).
+  - core/agent/repl.py
+        (a) Extend ReplIO Protocol with an OPTIONAL incremental hook
+            (render_delta + tool_step + tool_step_result). ConsoleIO
+            implements them (I2-clean). (b) run_turn drains the stream
+            (if a streaming responder is wired) so deltas reach the IO,
+            then routes the assembled turn UNCHANGED. (c) _dispatch_calls
+            emits tool_step("running: <synthesized cmd>") before dispatch
+            and tool_step_result(status) after. SINGLE-WRITER file.
+  - core/agent/prompt.py
+        Append a TOOL-USE DISCIPLINE block (when to call vs answer,
+        terseness, no narration) + a short FEW-SHOT to _HOUSE_SYSTEM_PROMPT
+        (or a new _TOOL_USE_GUIDE / _FEW_SHOT constant assembled into the
+        system message). Keep import-time _assert_no_ai_language.
+  - core/agent/router.py
+        Tighten the three re-ask strings (reask_invalid_arguments /
+        reask_unknown_tool / reask_invalid_input) to be more instructive
+        (echo the expected operation enum / the offending token) WITHOUT
+        changing TurnKind classification or the 0002 §5 message SHAPE.
+  - core/agent/main.py
+        build_repl: swap the buffered closure (main.py:178 `responder =
+        ... client.chat(...)`) for the streaming responder wired to the
+        ConsoleIO incremental sink; keep a flag/path that preserves the
+        buffered behavior if streaming is disabled.
+  - shell/shell.py
+        No behavior change expected; VERIFY only — the dead-man guard
+        must still wrap the streaming turn and still catch ConnectionError.
+
+### Migrations / env / deps
+  - No DB, no migration.
+  - Optional env: ERDTREE_STREAM (default ON in live path; tests inject
+    explicitly). If added, document it; absence = streaming on for the
+    live ConsoleIO path, buffered for injected responders.
+  - No new dependency. stdlib only.
+
+---
+
+## 3. PHASES
+
+Sequencing rationale: the STREAMING SPINE (P1 -> P2 -> P3) is a coupled
+chain through the two single-writer files (ollama.py, repl.py) and MUST be
+serial. PROMPT DISCIPLINE (P4) and RE-ASK TIGHTENING (P5) are pure
+string/prose work, independent of the spine, and run in PARALLEL with it.
+P6 is the integration + invariance gate that joins everything. P0 pins the
+"before" behavior so P6 can prove "unchanged".
+
+---
+
+### PHASE 0: Pin the Invariance Baseline — capture today's gate/audit/render shape
+   Prerequisites: none
+   Deliverables:
+      - A golden/characterization test (in tests/test_streaming.py or a
+        new tests/test_invariance_baseline.py) that runs a fixed set of
+        scripted turns (one read, one confirmed write, one declined write,
+        one destructive wrong-word, one MISS+re-ask) through Repl.run_turn
+        with the EXISTING buffered ScriptedResponder + FakeIO and records:
+          * exact audit record count + the permission_decision strings,
+          * the FakeIO.rendered list (what render() received),
+          * TurnOutcome fields (tool_calls_made, refused, misses, rounds).
+        These become the frozen "before" oracle for SC4.
+   Steps:
+      1. Reuse the fixtures already in tests/test_repl.py (ScriptedResponder
+         at :72, FakeIO at :54, _make_repl at :103, _stub_tool_results at
+         :95). Do NOT re-invent them.
+      2. Assert the recorded baseline values explicitly so any later phase
+         that perturbs gate/audit/render breaks THIS test loudly.
+   Validation:
+      - .venv/bin/python -m pytest tests/test_invariance_baseline.py -q
+        passes and the asserted numbers match current behavior.
+   Risks / Edge cases:
+      - Over-pinning render() exact strings could make legitimate P3
+        additions (tool-step lines go through NEW hooks, not render) noisy.
+        Mitigation: pin render() content for ENGLISH answers only; assert
+        tool-step lines via the new hooks in P3, not here.
+   Subagent orchestration:
+      - Execution shape: [SINGLE]
+      - REQUIRED subagent_type: general-purpose
+      - REQUIRED model: sonnet  (characterization test over an understood
+        surface; no architectural reasoning)
+      - Run in background: no (fast; gates the spine)
+      - Brief template:
+        "Execute Phase 0 of /home/aaron/erdtree/lifecycle/pending/plans/
+         erdtree-harness-ux.txt. Your slice: write a characterization test
+         that freezes today's gate/audit/render behavior. Read Section 3
+         Phase 0 and tests/test_repl.py (reuse ScriptedResponder/FakeIO/
+         _make_repl). Touch only tests/test_invariance_baseline.py.
+         Validation: .venv/bin/python -m pytest tests/test_invariance_
+         baseline.py -q is green and asserts concrete audit/render counts.
+         Evidence: paste the asserted baseline numbers. Print one-line
+         summary and exit."
+
+---
+
+### PHASE 1: Streaming Responder Adapter — stop collapsing the stream in OUR code
+   Prerequisites: P0 (baseline pinned)
+   Deliverables:
+      - In core/model/ollama.py, an ADDITIVE streaming responder: a
+        callable (messages, tools) -> AssembledResponse that internally
+        drains client.stream(...) and, for each chunk.content_delta, calls
+        an injected on_delta(token) sink BEFORE returning. Tool-call deltas
+        accumulate exactly as chat() does today (reuse that accumulation —
+        do not fork the logic). Net effect: identical AssembledResponse to
+        chat(), plus a side-channel of content tokens.
+      - A TEST DOUBLE: a streaming responder fake that, given a script of
+        content-delta chunks + final tool_calls, yields them incrementally
+        so the loop's incremental rendering is provable WITHOUT Ollama
+        (mirrors the _http_factory injection already used by
+        test_ollama_roundtrip.py).
+   Steps:
+      1. Factor the tool-call delta accumulation in chat() (ollama.py
+         :307-339) into a small reusable helper, OR have the streaming
+         responder call into the same accumulation. chat() must remain
+         byte-behavior-identical (test_ollama_roundtrip.py stays green).
+      2. The streaming responder takes the OllamaClient + an on_delta sink.
+         It does NOT open its own socket — it calls client.stream(), which
+         already asserts localhost at construction (I1).
+      3. Provide a factory the loop/main can wire: stream via on_delta into
+         the IO's incremental hook (introduced P2).
+   Validation:
+      - New unit test: feed a 3-content-delta + tool_call script through the
+        streaming-responder double; assert on_delta called >= 3 times in
+        order AND the returned AssembledResponse equals what chat() would
+        assemble from the same chunks (parity).
+      - test_ollama_roundtrip.py unchanged and green (chat() untouched).
+   Risks / Edge cases:
+      - Forking the accumulation logic risks chat()/stream divergence ->
+        a tool call assembled differently in streaming vs buffered path.
+        Mitigation: SHARE the accumulation helper; add the parity assert.
+      - on_delta must never raise into the loop. Wrap the sink call so a
+        rendering error never aborts assembly (degrade to no-stream).
+   Subagent orchestration:
+      - Execution shape: [SEQUENTIAL — depends on Phase 0]
+      - REQUIRED subagent_type: general-purpose
+      - REQUIRED model: opus  (transport-layer surgery on a load-bearing
+        I1 seam; chat()/stream parity must hold exactly — a subtle
+        accumulation bug corrupts tool calls)
+      - Run in background: no (gates P2)
+      - Brief template:
+        "Execute Phase 1 of /home/aaron/erdtree/lifecycle/pending/plans/
+         erdtree-harness-ux.txt. Your slice: add an ADDITIVE streaming
+         responder to core/model/ollama.py that drains stream() and emits
+         content tokens via an on_delta sink, returning the SAME
+         AssembledResponse chat() would. Read Section 3 Phase 1 + the
+         existing stream()/chat() (~lines 263-345). Touch only
+         core/model/ollama.py and a streaming test double in
+         tests/test_streaming.py. Do NOT change chat() behavior. Validation:
+         parity test (streaming AssembledResponse == chat() assembly) green
+         AND test_ollama_roundtrip.py still green via
+         .venv/bin/python -m pytest. Evidence: paste both pytest lines.
+         Print one-line summary and exit."
+
+---
+
+### PHASE 2: ReplIO Incremental Hook + Stream Drain in run_turn
+   Prerequisites: P1 (streaming responder exists)
+   Deliverables:
+      - ReplIO Protocol (repl.py:65) extended with OPTIONAL methods:
+          render_delta(token: str) -> None   # incremental content token
+          tool_step(text: str) -> None       # "running: <cmd>" (used P3)
+          tool_step_result(text: str) -> None# status after a call (P3)
+        Optionality: the loop feature-detects them (hasattr / default no-op)
+        so any ReplIO that only implements render() (today's contract,
+        A2/SC5) still works.
+      - ConsoleIO (repl.py:73) implements render_delta by writing the token
+        with NO trailing newline + flush (so tokens appear live), and keeps
+        render() for full-line ENGLISH answers. All strings I2-clean.
+      - run_turn drains the stream: when a streaming responder is wired, its
+        on_delta sink calls io.render_delta; the assembled turn returned is
+        routed UNCHANGED (A3). When a buffered responder is wired (tests),
+        behavior is byte-identical to today (no render_delta calls).
+   Steps:
+      1. Add the Protocol methods + ConsoleIO impls. Decide the seam: the
+         simplest is that build_repl wires the streaming responder's
+         on_delta to repl's io.render_delta; run_turn itself stays unaware
+         of "streaming vs buffered" because the responder owns the sink.
+         (Keeps run_turn's responder contract intact — A1.)
+      2. Ensure the final ENGLISH render path is not DOUBLED: if tokens were
+         already streamed via render_delta, the terminal already shows the
+         text; the existing self._io.render(verdict.content) at repl.py:506
+         must not re-print it. Resolve by: streaming IO's render() emits
+         only a trailing newline / no-op when the same content was already
+         streamed; buffered IO's render() prints in full as today. Make this
+         explicit and tested (no duplicate output, no missing output).
+      3. FakeIO (test_repl.py:54) gains render_delta capture so SC1 is
+         testable; existing FakeIO.rendered behavior preserved.
+   Validation:
+      - SC1: chunked streaming responder + streaming FakeIO -> rendered
+        deltas count == number of content deltas, in order.
+      - SC5: every existing test_repl.py test green (buffered path
+        unchanged); P0 baseline test green.
+      - No double-render test: assembled ENGLISH text appears exactly once.
+   Risks / Edge cases:
+      - Double-render (tokens + final render) is the top risk. Mitigation:
+        step 2 above + an explicit assertion.
+      - A render_delta that raises must not kill the turn. Mitigation:
+        guard the sink (P1 already wraps it); add a test where render_delta
+        raises and the turn still completes + audits.
+   Subagent orchestration:
+      - Execution shape: [SEQUENTIAL — depends on Phase 1]
+      - REQUIRED subagent_type: general-purpose
+      - REQUIRED model: opus  (loop-spine edit to repl.py — the run_turn /
+        IO contract; double-render and degrade-on-error are subtle and
+        gate SC1/SC5)
+      - Run in background: no (gates P3)
+      - Single-writer note: repl.py is edited HERE and in P3. P2 and P3
+        MUST be serial (same file) — never parallel-edit repl.py.
+      - Brief template:
+        "Execute Phase 2 of /home/aaron/erdtree/lifecycle/pending/plans/
+         erdtree-harness-ux.txt. Your slice: extend ReplIO with OPTIONAL
+         render_delta/tool_step/tool_step_result, implement render_delta on
+         ConsoleIO (live token write+flush, I2-clean), and wire the
+         streaming responder's on_delta to io.render_delta WITHOUT changing
+         the buffered path. Read Section 3 Phase 2 + repl.py (ReplIO :65,
+         ConsoleIO :73, run_turn :457, the render at :506). Touch only
+         core/agent/repl.py and tests/test_streaming.py (+ FakeIO in
+         tests/test_repl.py for delta capture). Validation: SC1 incremental-
+         render test green; ALL test_repl.py green; no-double-render test
+         green via .venv/bin/python -m pytest. Evidence: paste the SC1
+         assertion + the full test_repl.py pass line. Print one-line summary
+         and exit."
+
+---
+
+### PHASE 3: Live Tool-Call Display — "running: <cmd>" + result line
+   Prerequisites: P2 (tool_step hooks exist on ReplIO + ConsoleIO)
+   Deliverables:
+      - In _dispatch_calls (repl.py:574), AROUND each call:
+          * BEFORE the gate/dispatch: io.tool_step("running: " + <synth cmd>)
+            using synthesize_command(call) (repl.py:137) — already I2-clean
+            shell argv. NOTE: emit AFTER the gate clears for writes? No —
+            see Risk: the "running" line is shown only once the op is
+            ACTUALLY going to run (gate cleared). For a refused/declined op,
+            emit a "skipped" status instead, never "running".
+          * AFTER dispatch: io.tool_step_result with a terse status derived
+            from ToolResult (exit code / summary), I2-clean.
+      - ConsoleIO renders these as dim inline lines; FakeIO captures them.
+   Steps:
+      1. Place the tool_step("running: <cmd>") emission AFTER _resolve_gate
+         returns cleared==True and BEFORE _safe_dispatch (repl.py:609), so a
+         "running" line NEVER appears for an op the gate refused/declined
+         (I3 honesty: we never imply an unconfirmed write ran).
+      2. For refused/declined ops, emit tool_step_result with a neutral
+         "not run" status (the gate_note is already I2-clean).
+      3. Status strings: derive from result.exit_code / result.summary;
+         scrub through the same I2 check in a test. Speak as a command
+         interface ("done", "exit 0", "no changes", "not run") — never
+         "the agent did X".
+      4. Do NOT add or move any audit.write call. tool-step is display only;
+         audit calls stay exactly where they are (I4 / SC4).
+   Validation:
+      - SC2: a confirmed-write scripted turn -> FakeIO captured a
+        tool_step("running: ...") BEFORE and a tool_step_result AFTER, and
+        the synthesized command in the line matches synthesize_command.
+      - A declined-write turn -> NO "running:" line; a "not run" status line.
+      - SC3/I2: assert every captured tool_step / tool_step_result string
+        passes prompt._AI_PATTERN (no forbidden term).
+      - SC4: P0 baseline test + audit counts UNCHANGED (display added zero
+        audit records).
+   Risks / Edge cases:
+      - Showing "running:" before the gate would falsely imply an
+        unconfirmed write executed. Mitigation: step 1 placement (post-gate).
+      - synthesize_command for some ops returns a default-deny floor string
+        like "files remove" — fine, still I2-clean; just ensure the test
+        covers a non-trivial render (e.g. systemctl status nginx).
+   Subagent orchestration:
+      - Execution shape: [SEQUENTIAL — depends on Phase 2] (same file as P2)
+      - REQUIRED subagent_type: general-purpose
+      - REQUIRED model: opus  (touches _dispatch_calls, adjacent to the
+        gate/audit lines — must add display WITHOUT perturbing gate/audit
+        ordering; SC4 is the hard constraint)
+      - Run in background: no
+      - Single-writer note: repl.py — serialize after P2; never concurrent.
+      - Brief template:
+        "Execute Phase 3 of /home/aaron/erdtree/lifecycle/pending/plans/
+         erdtree-harness-ux.txt. Your slice: emit I2-clean live tool-step
+         lines in _dispatch_calls (repl.py:574) — 'running: <synthesize_
+         command>' ONLY after the gate clears, and a terse result/'not run'
+         status after. Do NOT touch any audit.write call or the gate logic.
+         Read Section 3 Phase 3 + repl.py _dispatch_calls + synthesize_
+         command (:137). Touch only core/agent/repl.py and
+         tests/test_tool_step_display.py. Validation: SC2 (running-before/
+         result-after on confirmed write; no running-line on declined),
+         SC3 (all step strings pass prompt._AI_PATTERN), SC4 (audit count
+         unchanged vs baseline) green via .venv/bin/python -m pytest.
+         Evidence: paste SC2 + SC4 assertions. Print one-line summary and
+         exit."
+
+---
+
+### PHASE 4: Small-Model Tool-Use Discipline + Few-Shot (PROMPT — independent)
+   Prerequisites: none (independent of the streaming spine; can run in
+                  parallel with P1-P3)
+   Deliverables:
+      - A TOOL-USE DISCIPLINE block appended to the house system prompt
+        (prompt.py): explicit "call a tool when the request needs a system
+        operation or fact; answer directly when it's a plain question;
+        never narrate that you are about to use a tool; be terse; one
+        operation at a time when unsure."
+      - A SHORT FEW-SHOT (2-3 examples) tuned for a 7B/3B: a request ->
+        a single clean tool call (correct operation + args), and a request
+        -> a direct English answer with no tool call. Examples use the SAME
+        wire shape the router expects (operation enum + args), so the small
+        model learns the exact format.
+   Steps:
+      1. Add as new constants (e.g. _TOOL_USE_GUIDE, _FEW_SHOT) assembled
+         into the system message in assemble_messages (prompt.py:177), OR
+         appended to _HOUSE_SYSTEM_PROMPT. Keep it TIGHT — small models
+         drown in long prompts; mirror Claude Code/OpenCode terseness.
+      2. Run _assert_no_ai_language at import on every new constant (the
+         file already does this for _HOUSE_SYSTEM_PROMPT at :113). The
+         few-shot must describe tool calls WITHOUT the words tool-as-AI:
+         speak of "the systemctl operation", "the dnf operation", etc., and
+         AVOID any forbidden term ("model"/"agent"/...). This is the
+         trickiest I2 surface — examples naturally tempt "the assistant
+         will...". Forbid that phrasing.
+      3. Keep the English-only rule (just added) intact and ordered.
+   Validation:
+      - SC6: test asserts the assembled system message CONTAINS the
+        discipline block + at least one tool-call few-shot + one direct-
+        answer few-shot.
+      - SC3/I2: the WHOLE assembled prompt (with few-shot) passes
+        _assert_no_ai_language; import-time check stays green.
+      - Backward compat: assemble()/assemble_messages signatures unchanged;
+        existing test_prompt / snapshot tests green.
+   Risks / Edge cases:
+      - Few-shot examples that drift from the real 0002 wire shape would
+        TEACH a wrong format. Mitigation: derive the example args from a
+        real registry tool schema shape (operation enum), and add a test
+        that the example's structure matches what router.validate_arguments
+        would accept (parse the example, run it through validate_arguments
+        against the matching ToolSpec, expect no MISS).
+      - Prompt bloat hurts small models. Mitigation: cap the addition;
+        prefer 2 examples over 5.
+   Subagent orchestration:
+      - Execution shape: [PARALLEL FANOUT OK — runs concurrently with the
+        P1-P3 spine] (different file: prompt.py; no overlap with repl.py/
+        ollama.py)
+      - REQUIRED subagent_type: general-purpose
+      - REQUIRED model: sonnet  (prompt-craft + light dispatch logic; the
+        few-shot must match the wire shape but this is prose, not
+        architecture). Reserve opus only if the validate_arguments parity
+        test proves fiddly.
+      - Run in background: yes (independent; harvest at the P6 join)
+      - Brief template:
+        "Execute Phase 4 of /home/aaron/erdtree/lifecycle/pending/plans/
+         erdtree-harness-ux.txt. Your slice: add a TIGHT tool-use
+         discipline block + 2-3 small-model few-shot examples to
+         core/agent/prompt.py, all I2-clean (import-time _assert_no_ai_
+         language must pass) and matching the 0002 wire shape. Read Section
+         3 Phase 4 + prompt.py (_HOUSE_SYSTEM_PROMPT :85, assemble_messages
+         :177, _FORBIDDEN_AI_TERMS :44). Touch only core/agent/prompt.py and
+         tests/test_prompt_fewshot.py. Validation: SC6 (blocks present) +
+         SC3 (full assembled prompt passes _AI_PATTERN) + a parity test
+         that each tool-call example passes router.validate_arguments,
+         green via .venv/bin/python -m pytest. Evidence: paste the I2 +
+         parity assertions. Print one-line summary and exit."
+
+---
+
+### PHASE 5: Tighter, More Instructive Self-Correcting Re-Ask (ROUTER — independent)
+   Prerequisites: none (independent; parallel with the spine and P4)
+   Deliverables:
+      - Sharper re-ask wording in router.py (reask_invalid_arguments :58,
+        reask_unknown_tool :66, reask_invalid_input :71) so a small model
+        can self-correct: echo the EXACT offending detail the validator
+        produced (validate_arguments already yields precise messages like
+        "'operation' must be one of [install, remove, ...], got 'instal'")
+        and, for unknown tool, optionally list valid tool names. Keep the
+        message SHAPE per 0002 §5 and I2-clean (no model/agent words —
+        speak about "the <tool> tool" and "the input", as today).
+   Steps:
+      1. Improve the strings to surface the concrete fix (the expected enum,
+         the missing required arg name, the offending token) — the validator
+         already computes these (router.py:280-307); thread them through.
+      2. Do NOT change TurnKind classification, the MISS/VALID predicate
+         (is_valid_action), or the reask_messages role:"tool" shape — the
+         loop's re-ask path (repl.py:520-527) and bench scoring depend on
+         them.
+      3. Keep every re-ask string passing the I2 filter.
+   Validation:
+      - test_router.py green (classification unchanged).
+      - New assertion: a malformed call (bad operation enum) produces a
+        re-ask string that CONTAINS the valid-operations list; an unknown
+        tool produces one naming the offending tool; both pass _AI_PATTERN.
+      - SC4: the re-ask path still audits the MISS exactly as today
+        (repl.py:512-519) — count unchanged vs P0 baseline.
+   Risks / Edge cases:
+      - Over-verbose re-asks can confuse a small model. Mitigation: keep
+        them one or two sentences; lead with the fix.
+      - Changing the message SHAPE (not just wording) would break re-ask
+        correlation. Mitigation: keep role:"tool" + tool_call_id shape.
+   Subagent orchestration:
+      - Execution shape: [PARALLEL FANOUT OK — concurrent with spine + P4]
+        (different file: router.py)
+      - REQUIRED subagent_type: general-purpose
+      - REQUIRED model: sonnet  (string-craft within a frozen contract;
+        light reasoning to keep SHAPE invariant)
+      - Run in background: yes (harvest at P6)
+      - Brief template:
+        "Execute Phase 5 of /home/aaron/erdtree/lifecycle/pending/plans/
+         erdtree-harness-ux.txt. Your slice: make the three re-ask strings
+         in core/agent/router.py (:58,:66,:71) more instructive — echo the
+         exact validator detail / valid-operation enum / offending tool —
+         WITHOUT changing TurnKind, is_valid_action, or the role:'tool'
+         re-ask SHAPE, and keep them I2-clean. Read Section 3 Phase 5 +
+         router.py (re-ask fns :58-74, validate_arguments :255-309).
+         Touch only core/agent/router.py and tests/test_router.py.
+         Validation: test_router.py green; new asserts that re-ask text
+         contains the concrete fix and passes prompt._AI_PATTERN, green via
+         .venv/bin/python -m pytest. Evidence: paste a before/after re-ask
+         string + the I2 assert. Print one-line summary and exit."
+
+---
+
+### PHASE 6: Integration Wiring + Invariance Gate + Full-Suite Green
+   Prerequisites: P1, P2, P3 (spine) AND P4, P5 (prose) all complete
+   Deliverables:
+      - core/agent/main.py: build_repl wires the STREAMING responder
+        (P1) with its on_delta sink pointed at the ConsoleIO render_delta
+        (P2), replacing the buffered closure at main.py:178 in the LIVE
+        path. A flag/env (ERDTREE_STREAM) or a clean default preserves the
+        ability to fall back to buffered. test_main.py stays green.
+      - shell/shell.py VERIFIED: the dead-man guard (_run_english_turn,
+        shell.py:282) still wraps the streaming turn; ConnectionError still
+        triggers the bash fallback; no new unbounded wait introduced (I9).
+      - The SC4 invariance proof: re-run the P0 baseline oracle against the
+        fully-wired streaming path and assert gate decisions + audit
+        records + TurnOutcome are IDENTICAL to the pinned "before" values.
+   Steps:
+      1. Wire build_repl (main.py) to construct the streaming responder and
+         pass the ConsoleIO whose render_delta is the sink. Keep the
+         buffered path reachable for SC5/back-compat.
+      2. Run the FULL suite; confirm >= 1795 prior tests + the new ones are
+         green via .venv/bin/python -m pytest.
+      3. Run the SC4 invariance comparison (streaming path vs P0 oracle).
+      4. Inventory EVERY new user-facing string across P2/P3/P4/P5 and
+         assert each passes prompt._AI_PATTERN in one consolidated I2 test
+         (SC3 belt-and-suspenders).
+      5. Confirm DEV-HOST honesty: no live Ollama round-trip is asserted;
+         live feel is reasoned + double-proven; real run is
+         DEFERRED-TO-MOSSAD (note in the test docstring).
+   Validation:
+      - Full suite green. SC1-SC5 tests green. SC4 invariance equality
+        holds. test_main.py + test_deadman.py green (I9 intact).
+   Risks / Edge cases:
+      - The live wiring is the only place the buffered->streaming swap is
+        irreversible-feeling; a mistake here makes the buffered tests pass
+        but the live path double-render or stall. Mitigation: keep buffered
+        reachable; gate the swap behind the invariance + no-double-render
+        tests; this phase is the high-stakes join -> route to the
+        consensus-verification-duo (see orchestration).
+   Subagent orchestration:
+      - Execution shape: [SEQUENTIAL — depends on P1,P2,P3,P4,P5]
+      - REQUIRED subagent_type: consensus-verification-duo
+        Rationale: this is the irreversible-feeling integration join where
+        SC4 (gate/audit/dead-man unchanged) is the load-bearing safety
+        claim. Two independent reviewers cross-examining the invariance
+        equality + the live wiring is worth the cost here (and ONLY here).
+        Do NOT inline-personate this — dispatch the real duo via the Agent
+        tool. If unavailable, ESCALATE.
+      - REQUIRED model: opus  (passed to the duo)
+      - Run in background: no (final gate; results needed inline)
+      - Single-writer note: main.py is the only NEW write here; repl.py is
+        READ/verify-only at this phase (its edits landed in P2/P3).
+      - Brief template:
+        "Execute Phase 6 of /home/aaron/erdtree/lifecycle/pending/plans/
+         erdtree-harness-ux.txt. Your slice: wire the streaming responder
+         into build_repl (core/agent/main.py:166-210, replacing the
+         buffered closure at :178) with on_delta -> ConsoleIO.render_delta,
+         keep the buffered path reachable, then PROVE SC4: run the Phase-0
+         invariance oracle against the streaming path and assert gate/audit/
+         TurnOutcome are identical. Verify shell/shell.py dead-man guard
+         (:282) still wraps the turn (I9). Read Sections 0(SC4), 1, 3
+         Phase 6. Touch core/agent/main.py + tests. Validation: FULL suite
+         green via .venv/bin/python -m pytest; SC4 equality holds;
+         test_deadman.py + test_main.py green. Two independent reviewers
+         must converge on 'gate/audit/dead-man behaviorally unchanged' or
+         report an honest split. Evidence: full-suite pass line + SC4
+         equality assertion. Print one-line summary and exit."
+
+---
+
+## 4. DATA MODEL CHANGES
+   None. No schema, no migration, no audit-record shape change (SC4
+   explicitly forbids altering what gets audited). The audit JSONL contract
+   (core/agent/audit.py) is untouched.
+
+## 5. API CONTRACT
+   No HTTP/endpoint surface. The internal "API" changes are:
+     - ReplIO Protocol gains OPTIONAL render_delta/tool_step/tool_step_result
+       (additive; default no-op; back-compatible — A2/SC5).
+     - core/model/ollama.py gains an additive streaming responder; chat()
+       and stream() signatures unchanged.
+     - 0002 wire contract UNCHANGED.
+
+## 6. WORKER / QUEUE CHANGES
+   None. No jobs, no schedules. Synchronous loop only.
+
+## 7. FRONTEND CHANGES
+   The "frontend" is the terminal. Changes:
+     - ConsoleIO writes content tokens live (render_delta: write+flush, no
+       newline) instead of one buffered print.
+     - Inline dim tool-step lines ("running: <cmd>", result/status).
+     - All terminal strings I2-clean (no AI/LLM/model/agent/ollama words).
+   No web routes/components/state-management.
+
+## 8. TESTING STRATEGY
+   Unit (all via .venv/bin/python -m pytest):
+     - tests/test_streaming.py: SC1 incremental render; P1 chat()/stream
+       parity; render_delta-raises-degrades.
+     - tests/test_tool_step_display.py: SC2 running/result lines; declined
+       -> no running line; SC3 I2 of step strings; SC4 audit-count parity.
+     - tests/test_prompt_fewshot.py: SC6 discipline + few-shot present;
+       SC3 whole-prompt I2; few-shot matches validate_arguments wire shape.
+     - tests/test_invariance_baseline.py (P0): the frozen "before" oracle.
+     - Existing test_repl.py / test_router.py / test_ollama_roundtrip.py /
+       test_main.py / test_deadman.py: must stay green (SC5/I9).
+   Integration:
+     - P6 invariance comparison: streaming path == P0 oracle for gate/audit/
+       TurnOutcome.
+   Manual QA checklist (DEFERRED-TO-MOSSAD — needs a real Linux box +
+   Ollama, NOT performable on this dev host):
+     [ ] Run the 7B (Radagon) tier live; confirm English answers stream
+         token-by-token, not as a wall.
+     [ ] Confirm "running: <cmd>" appears before each tool result and a
+         status after.
+     [ ] Read the output for I2 cleanliness (no AI/LLM/model words leak).
+     [ ] Repeat on the 14B tier.
+     [ ] Confirm a malformed tool call self-corrects within the round cap.
+   NOTE: live-model FEEL (does the 7B pick tools well, stop narrating?) is
+   PARTLY DEFERRED — that is the bench/fine-tune track (0001 residual risk,
+   Phase-10), separate from this harness work. This plan's job is to make
+   the harness good enough that a weak model feels good; it does not move
+   raw validity numbers.
+
+## 9. ROLLOUT & OBSERVABILITY
+   - Feature flag: ERDTREE_STREAM (optional) toggles the live streaming
+     path; default ON for ConsoleIO, with the buffered path always reachable
+     for tests + as a fallback.
+   - No new logging/metrics needed (audit spine unchanged; adding metrics
+     would risk I2/I4). Tool-step lines ARE the user-facing observability.
+   - Rollback: streaming is additive + flag-gated; setting ERDTREE_STREAM
+     off (or reverting main.py:178 to the buffered closure) restores the
+     exact pre-change live behavior. repl.py/ollama.py additions are inert
+     when no streaming responder/IO is wired.
+
+## 10. OPEN QUESTIONS
+   - Q1 render_delta seam: own the sink in the responder (build_repl wires
+     on_delta -> io.render_delta, run_turn stays unaware) vs. teach run_turn
+     about streaming directly. Plan PREFERS the responder-owns-sink option
+     (keeps run_turn's responder contract intact, A1). Confirm at P2.
+   - Q2 Few-shot count/content: 2 vs 3 examples; which tools to exemplify
+     (services.status read + a gated write?). Product/voice call — default
+     to 2 tight examples (one read tool call, one direct answer).
+   - Q3 Spinner: do we want an animated spinner during long tool runs, or
+     are static "running:/done" lines enough? Plan ships static lines
+     (simpler, fewer I2 surfaces); a spinner is a fast follow if desired.
+
+## 11. ESTIMATED EFFORT
+   P0  S    pin baseline (reuse existing fixtures)
+   P1  M    transport adapter + parity (opus; load-bearing)
+   P2  M    ReplIO hook + drain + no-double-render (opus; loop spine)
+   P3  S-M  tool-step display in _dispatch_calls (opus; near gate/audit)
+   P4  M    prompt discipline + few-shot + wire-shape parity (sonnet)
+   P5  S    re-ask tightening within frozen shape (sonnet)
+   P6  M    integration wiring + invariance gate (duo/opus; high-stakes)
+   Critical path: P0 -> P1 -> P2 -> P3 -> P6 (the streaming spine + join).
+   P4 and P5 run alongside and converge at P6.
+
+## 12. EXECUTOR ORCHESTRATION GUIDE
+
+### 12.1 Parallelism map
+   Phase | Execution | Siblings | Depends on   | Model  | Subagent type
+   P0    | SINGLE    | —        | none         | sonnet | general-purpose
+   P1    | SEQUENTIAL| —        | P0           | opus   | general-purpose
+   P2    | SEQUENTIAL| —        | P1           | opus   | general-purpose
+   P3    | SEQUENTIAL| —        | P2           | opus   | general-purpose
+   P4    | PARALLEL  | with P5  | none         | sonnet | general-purpose
+   P5    | PARALLEL  | with P4  | none         | sonnet | general-purpose
+   P6    | SEQUENTIAL| —        | P1-P5        | opus   | consensus-verification-duo
+
+   Dependency DAG:
+        P0 ──> P1 ──> P2 ──> P3 ──┐
+                                  ├──> P6 (join + invariance gate)
+        P4 ───────────────────────┤
+        P5 ───────────────────────┘
+   (P4, P5 have no inputs — dispatch them at executor start, in background,
+    alongside the P0->P3 spine. P6 harvests all five.)
+
+### 12.2 Cross-phase work consolidation
+   - SINGLE-WRITER files repl.py and ollama.py drive the serialization:
+     ollama.py is edited ONLY in P1; repl.py is edited in P2 AND P3 — run
+     P2 then P3 strictly serial, never parallel-edit repl.py.
+   - P4 (prompt.py) and P5 (router.py) touch DISJOINT files from the spine
+     and from each other -> safe genuine parallel pair; run both in
+     background concurrently with the P0->P3 chain.
+   - The P0 invariance oracle is WRITTEN once (P0) and READ again at P6 —
+     do not re-derive it; P6 imports/re-runs the P0 test.
+   - The I2 filter (prompt._AI_PATTERN) is reused by P3, P4, P5, P6 — each
+     imports it from core.agent.prompt; do not copy the term list.
+
+### 12.3 Model-mix budget
+   - Fable: 0 phases. Nothing here is frontier-grade; the hardest work
+     (transport parity, loop spine, the invariance join) is squarely opus.
+   - Opus: P1, P2, P3, P6 (transport surgery, loop-spine edits adjacent to
+     the gate/audit, the high-stakes integration join). ~57%.
+   - Sonnet: P0, P4, P5 (characterization test, prompt prose, re-ask
+     string-craft within a frozen contract). ~43%.
+   - Haiku: 0 phases — no purely-mechanical single-field edit here.
+   Rough split: 0% fable / 57% opus / 43% sonnet / 0% haiku. The opus share
+   is above the ~15% guideline BECAUSE four of seven phases touch the
+   load-bearing loop/transport seams with SC4 (gate/audit/dead-man
+   invariance) riding on them — justified, not default-reached.
+
+### 12.4 Estimated wall-clock
+   With parallelism (best case): P0->P1->P2->P3->P6 critical path with
+   P4/P5 overlapped ≈ 6 serial-phase-equivalents but the duo at P6 dominates
+   -> roughly 45-70 min wall-clock.
+   Strictly serial (worst case): all seven back to back ≈ 80-110 min.
+   Critical path: P0 -> P1 -> P2 -> P3 -> P6 (the streaming spine + the
+   invariance-gated join). P4/P5 are never on the critical path.
+
+### 12.5 Failure recovery policy
+   - P0: retry up to 2x (characterization test; non-flaky).
+   - P1: retry up to 2x; if chat()/stream parity cannot be made to hold,
+     PAUSE and escalate (transport-level correctness — do not paper over).
+   - P2: if no-double-render or degrade-on-error can't be satisfied, PAUSE
+     and escalate (loop-spine correctness).
+   - P3: retry up to 2x; if SC4 audit-count parity breaks, PAUSE and
+     escalate (means display perturbed the gate/audit ordering — a bug).
+   - P4: retry up to 2x (prompt I2 / wire-shape parity are deterministic).
+   - P5: retry up to 2x (string + shape tests are deterministic).
+   - P6: NEVER auto-retry past the duo's verdict. If the duo reports an
+     unresolved split on SC4 invariance, PAUSE and escalate to the user —
+     gate/audit/dead-man equivalence is the safety claim and must not be
+     rationalized.
+   Default if unspecified: pause and escalate.
+
+### 12.6 Audit trail location
+   Per-phase evidence: runtime/audits/erdtree-harness-ux/phase-<id>.md
+   Final rollup:        runtime/audits/erdtree-harness-ux/FINAL.md
+
+=====================================================================
+END OF PLAN
+=====================================================================

@@ -52,15 +52,24 @@ class FakeContext:
 
 
 class FakeIO:
-    """Scripted IO: confirm/typed answers are pre-set; rendered text captured."""
+    """Scripted IO: confirm/typed answers are pre-set; rendered text captured.
+
+    Also captures incremental deltas (render_delta) so streaming emission order
+    is testable (SC1). The existing ``rendered`` behavior is unchanged: buffered
+    tests that only call render() see exactly the same list they did before.
+    """
 
     def __init__(self, *, confirm: bool = True, typed_ok: bool = True) -> None:
         self._confirm = confirm
         self._typed_ok = typed_ok
         self.rendered: list[str] = []
+        self.deltas: list[str] = []
 
     def render(self, text: str) -> None:
         self.rendered.append(text)
+
+    def render_delta(self, token: str) -> None:
+        self.deltas.append(token)
 
     def confirm(self, prompt: str) -> bool:
         return self._confirm

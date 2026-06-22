@@ -48,29 +48,53 @@ from core.tools import ArgSpec, OpSpec, ToolRegistry, ToolResult, ToolSpec
 
 
 # --------------------------------------------------------------------------- #
-# Re-ask wording (0002 §5 — verbatim, I2-clean)                               #
+# Re-ask wording (0002 §5 — I2-clean, instructive for self-correction)        #
 # --------------------------------------------------------------------------- #
 #
 # These three strings are the FROZEN MISS signals from 0002 §5.  They are
-# surfaced back to the model as a ``role:"tool"`` (or system) message so it can
+# surfaced back to the loop as a ``role:"tool"`` message so the next turn can
 # rewrite its call.  None of them contain AI/LLM/model/agent language.
+#
+# Design: lead with the CONCRETE FIX — echo the exact detail the validator
+# produced (valid operation list, missing arg name, offending token) so a
+# small 7B/3B has the precise correction in front of it.  Keep each message
+# to one or two sentences; over-verbose re-asks confuse small bases.
 
 def reask_invalid_arguments(tool: str, detail: str) -> str:
-    """0002 §5 / opencode tool.ts:32 — invalid-arguments re-ask, verbatim."""
+    """0002 §5 — invalid-arguments re-ask; threads the exact validator detail.
+
+    ``detail`` is the precise message from :func:`validate_arguments`
+    (e.g. ``"'operation' must be one of [install, remove, ...], got 'instal'"``
+    or ``"operation 'restart' requires argument 'unit'"``).
+    Leading with the concrete fix helps a small base self-correct.
+    """
     return (
-        f"The `{tool}` tool was called with invalid arguments: {detail}. "
-        "Please rewrite the input so it satisfies the expected schema."
+        f"The `{tool}` tool was called with invalid input: {detail}. "
+        "Rewrite the input so it matches the required schema and try again."
     )
 
 
-def reask_unknown_tool(name: str) -> str:
-    """0002 §5 / tool-runtime.ts:25 — unknown-tool MISS signal, verbatim."""
-    return f"Unknown tool: {name}"
+def reask_unknown_tool(name: str, valid_tools: Optional[list[str]] = None) -> str:
+    """0002 §5 — unknown-tool MISS signal; names the offending tool.
+
+    When ``valid_tools`` is supplied (a sorted list of registered tool names)
+    it is appended so the next call can pick a correct name.
+    """
+    if valid_tools:
+        names = ", ".join(valid_tools)
+        return (
+            f"'{name}' is not a recognised tool. "
+            f"Use one of the available tools: {names}."
+        )
+    return f"'{name}' is not a recognised tool."
 
 
 def reask_invalid_input(detail: str) -> str:
-    """0002 §5 / tool-runtime.ts:39 — low-level decode-failure MISS signal."""
-    return f"Invalid tool input: {detail}"
+    """0002 §5 — low-level decode-failure MISS signal; surfaces offending token."""
+    return (
+        f"The tool input could not be parsed: {detail}. "
+        "Check that the input is valid JSON and try again."
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -397,7 +421,7 @@ class Router:
                 misses.append(MissDetail(
                     call_id=call_id,
                     reason="unknown_tool",
-                    reask=reask_unknown_tool(name),
+                    reask=reask_unknown_tool(name, self._registry.list_tools()),
                 ))
                 continue
 
