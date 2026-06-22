@@ -1,0 +1,1553 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Erdtree · Linux in English</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #000;
+      --bg-2: #080808;
+      --bg-3: #111;
+      --bg-4: #161616;
+      --border: rgba(255,255,255,0.07);
+      --border-2: rgba(255,255,255,0.13);
+      --text: #fff;
+      --text-2: #888;
+      --text-3: #444;
+      --accent: #c8952a;
+      --accent-bright: #e8aa35;
+      --accent-dim: rgba(200,149,42,0.12);
+      --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      --mono: 'JetBrains Mono', 'Fira Code', monospace;
+      --r: 8px;
+      --r-lg: 12px;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 16px;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image: radial-gradient(rgba(255,255,255,0.025) 1px, transparent 1px);
+      background-size: 32px 32px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* NAV */
+    nav {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      z-index: 100;
+      height: 60px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 32px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(0,0,0,0.82);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+    }
+
+    .nav-logo {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      cursor: pointer;
+      text-decoration: none;
+    }
+
+    .nav-logo-text {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text);
+      letter-spacing: -0.02em;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+    }
+
+    .nav-link {
+      font-size: 14px;
+      color: var(--text-2);
+      padding: 6px 12px;
+      border-radius: 6px;
+      transition: color 0.15s, background 0.15s;
+      cursor: pointer;
+    }
+
+    .nav-link:hover { color: var(--text); background: rgba(255,255,255,0.05); }
+
+    .nav-cta {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--bg);
+      background: var(--text);
+      padding: 7px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+
+    .nav-cta:hover { opacity: 0.85; }
+
+    /* PAGES */
+    .page { display: none; min-height: 100vh; position: relative; z-index: 1; }
+    .page.active { display: block; animation: fadeUp 0.22s ease; }
+    @keyframes fadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+    /* BUTTONS */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 14px;
+      font-weight: 600;
+      font-family: var(--font);
+      padding: 10px 20px;
+      border-radius: 7px;
+      cursor: pointer;
+      border: none;
+      text-decoration: none;
+      transition: opacity 0.15s, background 0.15s, color 0.15s, border-color 0.15s;
+    }
+
+    .btn-primary { background: var(--text); color: var(--bg); }
+    .btn-primary:hover { opacity: 0.87; }
+
+    .btn-ghost {
+      background: transparent;
+      color: var(--text-2);
+      border: 1px solid var(--border-2);
+      font-weight: 500;
+    }
+    .btn-ghost:hover { color: var(--text); border-color: rgba(255,255,255,0.22); background: rgba(255,255,255,0.04); }
+
+    /* SECTION */
+    .section {
+      padding: 96px 32px;
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+
+    .section-label {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 14px;
+    }
+
+    .section-title {
+      font-size: clamp(30px, 4vw, 46px);
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      line-height: 1.1;
+      margin-bottom: 14px;
+    }
+
+    .section-sub {
+      font-size: 16px;
+      color: var(--text-2);
+      max-width: 500px;
+      line-height: 1.7;
+    }
+
+    hr.div { border: none; border-top: 1px solid var(--border); margin: 0; }
+
+    /* GRID PRIMITIVES */
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 1px;
+      background: var(--border);
+      border: 1px solid var(--border);
+      border-radius: var(--r-lg);
+      overflow: hidden;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1px;
+      background: var(--border);
+      border: 1px solid var(--border);
+      border-radius: var(--r-lg);
+      overflow: hidden;
+    }
+
+    .grid-cell {
+      background: var(--bg);
+      padding: 36px;
+    }
+
+    /* BADGE */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 3px 9px;
+      border-radius: 4px;
+    }
+
+    .badge-green { background: rgba(74,222,128,0.1); color: #4ade80; }
+    .badge-gold { background: var(--accent-dim); color: var(--accent-bright); }
+    .badge-dim { background: rgba(255,255,255,0.04); color: var(--text-3); border: 1px solid var(--border); }
+
+    /* TERMINAL */
+    .terminal {
+      background: var(--bg-3);
+      border: 1px solid var(--border);
+      border-radius: var(--r-lg);
+      overflow: hidden;
+    }
+
+    .terminal-bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 11px 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-2);
+    }
+
+    .dot { width: 10px; height: 10px; border-radius: 50%; }
+    .dot-r { background: #ff5f57; }
+    .dot-y { background: #febc2e; }
+    .dot-g { background: #28c840; }
+
+    .terminal-title {
+      flex: 1;
+      text-align: center;
+      font-size: 12px;
+      color: var(--text-3);
+      font-family: var(--mono);
+    }
+
+    .terminal-body {
+      padding: 24px;
+      font-family: var(--mono);
+      font-size: 13px;
+      line-height: 1.85;
+    }
+
+    .t-row { display: flex; align-items: flex-start; gap: 8px; }
+    .t-p { color: var(--accent); flex-shrink: 0; }
+    .t-cmd { color: #fff; }
+    .t-out { color: var(--text-2); }
+    .t-dim { color: var(--text-3); font-size: 12px; }
+    .t-ok { color: #4ade80; }
+    .t-warn { color: #fbbf24; }
+    .t-err { color: #f87171; }
+    .t-gap { height: 10px; }
+
+    /* ===================== HOME ===================== */
+
+    .home-hero {
+      padding: 152px 32px 100px;
+      max-width: 860px;
+      margin: 0 auto;
+      text-align: center;
+      position: relative;
+    }
+
+    .home-hero::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 50%; transform: translateX(-50%);
+      width: 800px; height: 560px;
+      background: radial-gradient(ellipse at 50% 25%, rgba(240,220,160,0.09) 0%, rgba(220,195,120,0.04) 50%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      background: var(--accent-dim);
+      border: 1px solid rgba(200,149,42,0.22);
+      padding: 5px 13px;
+      border-radius: 100px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--accent-bright);
+      margin-bottom: 36px;
+    }
+
+    .badge-pulse {
+      width: 5px; height: 5px;
+      border-radius: 50%;
+      background: var(--accent-bright);
+      box-shadow: 0 0 6px var(--accent-bright);
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+    .home-hero h1 {
+      font-size: clamp(58px, 9vw, 100px);
+      font-weight: 800;
+      letter-spacing: -0.045em;
+      line-height: 1.0;
+      padding-bottom: 0.1em;
+      margin-bottom: 24px;
+      background: linear-gradient(180deg, #fff 30%, rgba(255,255,255,0.6) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .home-hero-sub {
+      font-size: 18px;
+      color: var(--text-2);
+      max-width: 520px;
+      margin: 0 auto 48px;
+      line-height: 1.7;
+    }
+
+    .hero-actions {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    /* PRODUCT CARDS */
+    .product-cards {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 1px;
+      background: var(--border);
+      border: 1px solid var(--border);
+      border-radius: var(--r-lg);
+      overflow: hidden;
+      margin-top: 64px;
+    }
+
+    .product-card {
+      background: var(--bg);
+      padding: 40px;
+      cursor: pointer;
+      transition: background 0.15s;
+      position: relative;
+    }
+
+    .product-card:hover { background: var(--bg-3); }
+    .product-card.feat { background: var(--bg-2); }
+    .product-card.feat:hover { background: var(--bg-3); }
+    .product-card.dim { cursor: default; opacity: 0.6; }
+    .product-card.dim:hover { background: var(--bg); }
+
+    .product-card h3 {
+      font-size: 21px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin: 16px 0 6px;
+    }
+
+    .product-card-sub {
+      font-size: 14px;
+      color: var(--text-2);
+      margin-bottom: 14px;
+      line-height: 1.5;
+    }
+
+    .product-card-spec {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--text-3);
+    }
+
+    .card-arrow {
+      position: absolute;
+      bottom: 32px; right: 32px;
+      color: var(--text-3);
+      font-size: 16px;
+      transition: color 0.15s, transform 0.15s;
+    }
+
+    .product-card:not(.dim):hover .card-arrow {
+      color: var(--text-2);
+      transform: translate(2px, -2px);
+    }
+
+    /* HOW IT WORKS */
+    .how-num {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--text-3);
+      margin-bottom: 20px;
+      letter-spacing: 0.05em;
+    }
+
+    .how-icon {
+      width: 36px; height: 36px;
+      border-radius: 8px;
+      background: var(--accent-dim);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--accent-bright);
+      font-size: 16px;
+      margin-bottom: 16px;
+    }
+
+    .grid-cell h4 {
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      margin-bottom: 8px;
+    }
+
+    .grid-cell p {
+      font-size: 14px;
+      color: var(--text-2);
+      line-height: 1.65;
+    }
+
+    /* INVARIANTS */
+    .invariants { margin-top: 64px; }
+
+    .inv {
+      display: flex;
+      align-items: flex-start;
+      gap: 20px;
+      padding: 26px 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .inv:first-child { border-top: 1px solid var(--border); }
+
+    .inv-num {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--text-3);
+      padding-top: 3px;
+      flex-shrink: 0;
+      width: 20px;
+    }
+
+    .inv h4 {
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      margin-bottom: 4px;
+    }
+
+    .inv p {
+      font-size: 14px;
+      color: var(--text-2);
+      line-height: 1.6;
+    }
+
+    /* ===================== PRODUCT HERO ===================== */
+    .product-hero {
+      padding: 140px 32px 80px;
+      max-width: 860px;
+      margin: 0 auto;
+      position: relative;
+    }
+
+    .product-hero::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0; height: 360px;
+      background: radial-gradient(ellipse at 35% 20%, rgba(200,149,42,0.09) 0%, transparent 60%);
+      pointer-events: none;
+    }
+
+    .eyebrow {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 28px;
+    }
+
+    .eyebrow-line {
+      height: 1px; width: 36px;
+      background: var(--accent);
+      opacity: 0.5;
+    }
+
+    .eyebrow-text {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--accent);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .product-hero h1 {
+      font-size: clamp(46px, 7vw, 78px);
+      font-weight: 800;
+      letter-spacing: -0.04em;
+      line-height: 1.0;
+      margin-bottom: 12px;
+    }
+
+    .product-tagline {
+      font-size: 20px;
+      color: var(--text-2);
+      margin-bottom: 20px;
+      font-weight: 400;
+      letter-spacing: -0.01em;
+    }
+
+    .product-desc {
+      font-size: 16px;
+      color: var(--text-2);
+      max-width: 600px;
+      line-height: 1.75;
+      margin-bottom: 40px;
+    }
+
+    .product-meta {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      flex-wrap: wrap;
+    }
+
+    .meta-item { display: flex; flex-direction: column; gap: 4px; }
+
+    .meta-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      color: var(--text-3);
+      font-weight: 600;
+    }
+
+    .meta-val {
+      font-family: var(--mono);
+      font-size: 13px;
+      color: var(--text);
+    }
+
+    .meta-div {
+      width: 1px; height: 30px;
+      background: var(--border-2);
+    }
+
+    /* USE CASES */
+    .use-cases {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-top: 48px;
+    }
+
+    .uc {
+      background: var(--bg-2);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      padding: 20px 22px;
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+    }
+
+    .uc-dot { color: var(--accent); flex-shrink: 0; margin-top: 1px; font-size: 12px; }
+
+    .uc-text { font-size: 14px; color: var(--text-2); line-height: 1.5; }
+    .uc-text strong { color: var(--text); display: block; margin-bottom: 2px; font-weight: 500; font-size: 13px; }
+
+    /* FEATURE GRID */
+    .feat-icon {
+      width: 32px; height: 32px;
+      border-radius: 7px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 14px;
+      font-size: 15px;
+    }
+
+    /* CTA STRIP */
+    .cta-strip {
+      padding: 72px 32px;
+      text-align: center;
+      border-top: 1px solid var(--border);
+    }
+
+    .cta-strip h2 {
+      font-size: 32px;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      margin-bottom: 10px;
+    }
+
+    .cta-strip p {
+      font-size: 15px;
+      color: var(--text-2);
+      max-width: 400px;
+      margin: 0 auto 32px;
+      line-height: 1.65;
+    }
+
+    /* TEASER */
+    .teaser {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      text-align: center;
+      padding: 32px;
+      position: relative;
+    }
+
+    .teaser::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(ellipse at 50% 50%, rgba(200,149,42,0.06) 0%, transparent 60%);
+      pointer-events: none;
+    }
+
+    #p-radahn .teaser::before {
+      background: radial-gradient(ellipse at 50% 58%, rgba(120,5,15,0.38) 0%, rgba(90,3,10,0.16) 35%, transparent 65%);
+    }
+
+    .teaser h1 {
+      font-size: clamp(72px, 12vw, 128px);
+      font-weight: 900;
+      letter-spacing: -0.05em;
+      line-height: 1.0;
+      margin: 16px 0;
+      background: linear-gradient(180deg, rgba(255,255,255,0.75) 0%, rgba(255,255,255,0.18) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .teaser p {
+      font-size: 16px;
+      color: var(--text-3);
+      max-width: 380px;
+      line-height: 1.7;
+      margin-bottom: 40px;
+    }
+
+    .teaser-stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1px;
+      max-width: 600px;
+      width: 100%;
+      background: var(--border);
+      border: 1px solid var(--border);
+      border-radius: var(--r-lg);
+      overflow: hidden;
+      margin-bottom: 40px;
+    }
+
+    .teaser-stat {
+      background: var(--bg-2);
+      padding: 22px 24px;
+      text-align: center;
+    }
+
+    .teaser-stat-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      color: var(--text-3);
+      margin-bottom: 6px;
+      font-weight: 600;
+    }
+
+    .teaser-stat-val {
+      font-family: var(--mono);
+      font-size: 13px;
+      color: var(--text-3);
+    }
+
+    /* DOWNLOAD */
+    .dl-hero {
+      padding: 140px 32px 64px;
+      text-align: center;
+      max-width: 640px;
+      margin: 0 auto;
+    }
+
+    .dl-hero h1 {
+      font-size: clamp(40px, 6vw, 60px);
+      font-weight: 800;
+      letter-spacing: -0.04em;
+      margin-bottom: 14px;
+    }
+
+    .dl-hero p {
+      font-size: 16px;
+      color: var(--text-2);
+      line-height: 1.7;
+    }
+
+    .dl-grid {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 0 32px 80px;
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 14px;
+    }
+
+    .dl-card {
+      background: var(--bg-2);
+      border: 1px solid var(--border);
+      border-radius: var(--r-lg);
+      padding: 30px;
+    }
+
+    .dl-card.primary {
+      border-color: rgba(200,149,42,0.22);
+      background: linear-gradient(140deg, rgba(200,149,42,0.05) 0%, var(--bg-2) 55%);
+    }
+
+    .dl-card h3 {
+      font-size: 19px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin: 12px 0 6px;
+    }
+
+    .dl-card p {
+      font-size: 14px;
+      color: var(--text-2);
+      margin-bottom: 22px;
+      line-height: 1.6;
+    }
+
+    .dl-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 500;
+      font-family: var(--font);
+      background: rgba(255,255,255,0.04);
+      color: var(--text-3);
+      border: 1px solid var(--border);
+      cursor: default;
+    }
+
+    .notify {
+      max-width: 460px;
+      margin: 0 auto 80px;
+      padding: 0 32px;
+      text-align: center;
+    }
+
+    .notify p { font-size: 14px; color: var(--text-2); margin-bottom: 14px; }
+
+    .notify-row { display: flex; gap: 8px; }
+
+    .notify-input {
+      flex: 1;
+      background: var(--bg-2);
+      border: 1px solid var(--border-2);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 14px;
+      padding: 9px 14px;
+      border-radius: 7px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    .notify-input:focus { border-color: rgba(255,255,255,0.25); }
+    .notify-input::placeholder { color: var(--text-3); }
+
+    .notify-btn {
+      background: var(--text);
+      color: var(--bg);
+      font-family: var(--font);
+      font-size: 13px;
+      font-weight: 600;
+      padding: 9px 18px;
+      border-radius: 7px;
+      border: none;
+      cursor: pointer;
+      transition: opacity 0.15s, background 0.15s, color 0.15s;
+      white-space: nowrap;
+    }
+
+    .notify-btn:hover { opacity: 0.88; }
+
+    /* FOOTER */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 36px 32px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .footer-inner {
+      max-width: 1100px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .footer-logo { font-size: 14px; font-weight: 600; color: var(--text-3); }
+
+    .footer-links { display: flex; gap: 22px; }
+
+    .footer-link {
+      font-size: 13px;
+      color: var(--text-3);
+      cursor: pointer;
+      transition: color 0.15s;
+    }
+
+    .footer-link:hover { color: var(--text-2); }
+
+    .footer-copy { font-size: 12px; color: var(--text-3); }
+
+    /* RESPONSIVE */
+    @media (max-width: 768px) {
+      nav { padding: 0 20px; }
+      .nav-links { display: none; }
+      .home-hero, .product-hero, .section { padding-left: 20px; padding-right: 20px; }
+      .product-cards, .grid-2, .grid-3, .use-cases, .dl-grid { grid-template-columns: 1fr; }
+      .footer-inner { flex-direction: column; gap: 16px; text-align: center; }
+      .footer-links { flex-wrap: wrap; justify-content: center; }
+      .product-meta { gap: 16px; }
+      .meta-div { display: none; }
+    }
+
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--bg-4); border-radius: 3px; }
+
+    /* NOT STRIP */
+    .not-strip {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 32px;
+    }
+
+    .not-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 13px;
+      color: var(--text-3);
+      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--border);
+      padding: 5px 13px;
+      border-radius: 100px;
+      letter-spacing: 0.01em;
+    }
+
+    .not-x {
+      color: #555;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    /* MODEL CORPUS PILLS */
+    .corpus-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 20px;
+    }
+
+    .corpus-pill {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--text-3);
+      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--border);
+      padding: 4px 10px;
+      border-radius: 4px;
+    }
+    /* Per-page accent overrides */
+    #p-home {
+      --accent: #d4bc78;
+      --accent-bright: #e8d090;
+      --accent-dim: rgba(212,188,120,0.1);
+    }
+
+    #p-marika {
+      --accent: #f0c040;
+      --accent-bright: #f5d060;
+      --accent-dim: rgba(240,192,64,0.12);
+    }
+
+    #p-radagon {
+      --accent: #b01828;
+      --accent-bright: #c41e30;
+      --accent-dim: rgba(176,24,40,0.12);
+    }
+
+    #p-radagon .t-warn,
+    .terminal-radagon .t-warn { color: #b01828; }
+    .terminal-radagon .t-p { color: #b01828; }
+  </style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <div class="nav-logo" onclick="go('home')">
+    <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+      <path d="M11 1.5L2 6.5v4.5c0 4.8 3.4 9.3 8.2 10.3.6.1 1 .1 1.6 0C16.6 20.3 20 15.8 20 11V6.5L11 1.5z" fill="#c8952a" fill-opacity=".12" stroke="#c8952a" stroke-width="1.4" stroke-linejoin="round"/>
+      <path d="M11 6v5M8.5 8.5L11 11l2.5-2.5" stroke="#c8952a" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <span class="nav-logo-text">Erdtree</span>
+  </div>
+  <div class="nav-links">
+    <span class="nav-link" onclick="go('home')">Home</span>
+    <span class="nav-link" onclick="go('marika')">Marika</span>
+    <span class="nav-link" onclick="go('radagon')">Radagon</span>
+    <span class="nav-link" onclick="go('radahn')">Radahn</span>
+  </div>
+  <span class="nav-cta" onclick="go('download')">Download</span>
+</nav>
+
+<!-- ════════════════════════ HOME ════════════════════════ -->
+<div class="page active" id="p-home">
+
+  <div class="home-hero">
+    <h1>Linux in English.</h1>
+    <p class="home-hero-sub">Each distribution ships a model trained specifically on Linux. Not a general assistant pointed at a shell. The terminal just speaks your language now.</p>
+    <div class="hero-actions">
+      <span class="btn btn-primary" onclick="go('download')">
+        Download
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M6.5 1v7.5M3 6l3.5 3L10 6M1.5 11h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </span>
+      <span class="btn btn-ghost" onclick="go('radagon')">
+        See Radagon
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 6h8M7 3l3 3-3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </span>
+    </div>
+    <div class="not-strip">
+      <div class="not-item"><span class="not-x">✕</span> Not a chatbot</div>
+      <div class="not-item"><span class="not-x">✕</span> Not a cloud service</div>
+      <div class="not-item"><span class="not-x">✕</span> Not a general-purpose model</div>
+    </div>
+  </div>
+
+  <!-- Terminal -->
+  <div style="max-width:1100px;margin:0 auto;padding:0 32px 80px">
+    <div class="terminal terminal-radagon">
+      <div class="terminal-bar">
+        <div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div>
+        <span class="terminal-title">radagon bash</span>
+      </div>
+      <div class="terminal-body">
+        <div class="t-row"><span class="t-p">$</span><span class="t-cmd"> why is nginx not starting</span></div>
+        <div class="t-row"><span class="t-dim">→ Reading system context Rocky 9 · 32GB RAM · nginx 1.24</span></div>
+        <div class="t-row"><span class="t-dim">→ Scanning journal: nginx.service (last 200 lines)</span></div>
+        <div class="t-gap"></div>
+        <div class="t-row"><span class="t-out"><span class="t-warn">Port conflict</span> apache2.service is bound to :80</span></div>
+        <div class="t-row"><span class="t-out">nginx.service failed: exit 1 Address already in use</span></div>
+        <div class="t-gap"></div>
+        <div class="t-row"><span class="t-dim">Stop apache2 and start nginx? [y/N]</span></div>
+        <div class="t-row"><span class="t-p">$</span><span class="t-cmd"> y</span></div>
+        <div class="t-row"><span class="t-out"><span class="t-ok">✓</span> apache2.service stopped</span></div>
+        <div class="t-row"><span class="t-out"><span class="t-ok">✓</span> nginx.service started active, running</span></div>
+      </div>
+    </div>
+  </div>
+
+  <hr class="div">
+
+  <!-- The Suite -->
+  <div class="section">
+    <div class="section-label">The Suite</div>
+    <div class="section-title">One mission.<br>Three tiers.</div>
+    <p class="section-sub">From the homelab to the hyperscale data center. A Linux distribution for every scale of operation.</p>
+
+    <div class="product-cards" style="margin-top:56px;grid-template-columns:1fr">
+      <div class="product-card feat" onclick="go('marika')" style="background:linear-gradient(135deg,rgba(240,192,64,0.04) 0%,var(--bg-2) 50%)">
+        <span class="badge badge-green">Active</span>
+        <h3>Linux <span style="color:#f0c040">Marika</span></h3>
+        <p class="product-card-sub">Linux for everyone. Hobbyists, students, and homelabbers.</p>
+        <span class="product-card-spec">~3B quantized · runs on anything</span>
+        <span class="card-arrow" style="color:#f0c04066">↗</span>
+      </div>
+
+      <div class="product-card feat" onclick="go('radagon')" style="border-left:1px solid var(--border);background:linear-gradient(135deg,rgba(176,24,40,0.05) 0%,var(--bg-2) 50%)">
+        <span class="badge badge-green">Active</span>
+        <h3>Linux <span style="color:#b01828">Radagon</span></h3>
+        <p class="product-card-sub">Enterprise Linux, spoken plainly. Built for teams that operate at scale.</p>
+        <span class="product-card-spec">7B–14B · trained on Linux</span>
+        <span class="card-arrow" style="color:#b0182866">↗</span>
+      </div>
+
+      <div class="product-card dim" style="border-top:1px solid var(--border)" onclick="go('radahn')">
+        <span class="badge badge-dim">Coming Soon</span>
+        <h3>Linux Radahn</h3>
+        <p class="product-card-sub">Hyperscale intelligence for enterprise infrastructure.</p>
+        <span class="product-card-spec">Massive model · dedicated infrastructure</span>
+      </div>
+
+    </div>
+  </div>
+
+  <hr class="div">
+
+  <!-- The Model -->
+  <div class="section">
+    <div class="section-label">The Model</div>
+    <div class="section-title">Purpose-trained.<br>Not a chatbot.</div>
+    <p class="section-sub">Every distribution ships a model built from the ground up for Linux system administration. No chat UI. No prompt engineering. No general model pretending.</p>
+
+    <div class="grid-2" style="margin-top:56px">
+      <div class="grid-cell">
+        <div class="feat-icon" style="background:rgba(255,255,255,0.04);color:var(--text-2)">◈</div>
+        <h4>Trained on what sysadmins actually use</h4>
+        <p>Not a general model pointed at Linux and called done. A model built from the real sources sysadmins rely on every day.</p>
+        <div class="corpus-pills">
+          <span class="corpus-pill">man pages</span>
+          <span class="corpus-pill">RHEL docs</span>
+          <span class="corpus-pill">Arch wiki</span>
+          <span class="corpus-pill">CVE advisories</span>
+          <span class="corpus-pill">kernel mailing lists</span>
+          <span class="corpus-pill">production postmortems</span>
+          <span class="corpus-pill">Stack Overflow sysadmin</span>
+        </div>
+      </div>
+      <div class="grid-cell">
+        <div class="feat-icon" style="background:rgba(255,255,255,0.04);color:var(--text-2)">⊞</div>
+        <h4>One specialized model per tier</h4>
+        <p>Marika is built to run on modest hardware. Radagon is built for enterprise scale. Each tier gets the model it needs — not the same model scaled up or down.</p>
+      </div>
+      <div class="grid-cell">
+        <div class="feat-icon" style="background:rgba(248,113,113,0.08);color:#f87171">✕</div>
+        <h4>No chatbot. No UI. No theater.</h4>
+        <p>These are not chat interfaces bolted onto a Linux shell. They are Linux distributions where the shell understands English. The difference isn't cosmetic. It's the entire product.</p>
+      </div>
+      <div class="grid-cell">
+        <div class="feat-icon" style="background:rgba(255,255,255,0.04);color:var(--text-2)">⬡</div>
+        <h4>Runs entirely on-box</h4>
+        <p>The model runs on your hardware. No API keys. No rate limits. No data leaving the box. No subscription. What happens on the machine stays on the machine.</p>
+      </div>
+    </div>
+  </div>
+
+  <hr class="div">
+
+  <!-- How it works -->
+  <div class="section">
+    <div class="section-label">How it works</div>
+    <div class="section-title">The machine reads<br>itself. You just talk.</div>
+    <p class="section-sub">The distributions don't ask you to describe your environment. They already know it.</p>
+
+    <div class="grid-3" style="margin-top:56px">
+      <div class="grid-cell">
+        <div class="how-num">01</div>
+        <div class="how-icon">⌨</div>
+        <h4>You type in English</h4>
+        <p>Ask anything describe what you want, what's broken, or what you're trying to do. No command syntax required.</p>
+      </div>
+      <div class="grid-cell">
+        <div class="how-num">02</div>
+        <div class="how-icon">◎</div>
+        <h4>The system reads itself</h4>
+        <p>A live model of your OS services, packages, hardware, logs, ports, firewall rules injected automatically into every query.</p>
+      </div>
+      <div class="grid-cell">
+        <div class="how-num">03</div>
+        <div class="how-icon">⚡</div>
+        <h4>Linux executes</h4>
+        <p>Reads run immediately. Writes confirm first. Destructive ops require sign-off. Every action is logged. Nothing runs silently.</p>
+      </div>
+    </div>
+  </div>
+
+  <hr class="div">
+
+  <!-- The Promise -->
+  <div class="section">
+    <div class="section-label">The Promise</div>
+    <div class="section-title">Non-negotiable.</div>
+    <p class="section-sub">The invariants that define what these distributions are and what they never will be.</p>
+
+    <div class="invariants">
+      <div class="inv">
+        <div class="inv-num">I</div>
+        <div>
+          <h4>No external API calls. Ever.</h4>
+          <p>Everything runs on your machine. Your data never leaves. Private by construction, not by policy.</p>
+        </div>
+      </div>
+      <div class="inv">
+        <div class="inv-num">II</div>
+        <div>
+          <h4>The AI is invisible.</h4>
+          <p>No mention of AI, LLM, agents, or models in user-facing output. It's just Linux that understands you.</p>
+        </div>
+      </div>
+      <div class="inv">
+        <div class="inv-num">III</div>
+        <div>
+          <h4>Nothing destructive without confirmation.</h4>
+          <p>Destructive and privileged operations require explicit confirmation. No exceptions, no shortcuts.</p>
+        </div>
+      </div>
+      <div class="inv">
+        <div class="inv-num">IV</div>
+        <div>
+          <h4>Every operation is logged.</h4>
+          <p>Full audit trail: timestamp, input, translated command, output, result. Non-negotiable.</p>
+        </div>
+      </div>
+      <div class="inv">
+        <div class="inv-num">V</div>
+        <div>
+          <h4>You never explain your environment.</h4>
+          <p>System context is always injected. If the distribution doesn't know your environment, that's a bug — not a question for you.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    <div class="footer-inner">
+      <span class="footer-logo">Erdtree</span>
+      <div class="footer-links">
+        <span class="footer-link" onclick="go('marika')">Marika</span>
+        <span class="footer-link" onclick="go('radagon')">Radagon</span>
+        <span class="footer-link" onclick="go('radahn')">Radahn</span>
+        <span class="footer-link" onclick="go('download')">Download</span>
+      </div>
+      <span class="footer-copy">© 2026 Erdtree</span>
+    </div>
+  </footer>
+</div>
+
+<!-- ════════════════════════ MARIKA ════════════════════════ -->
+<div class="page" id="p-marika">
+  <div class="product-hero">
+    <div class="eyebrow">
+      <div class="eyebrow-line"></div>
+      <span class="eyebrow-text">Linux Marika</span>
+    </div>
+    <h1>Linux <span style="-webkit-text-fill-color:#f0c040;color:#f0c040">Marika</span></h1>
+    <p class="product-tagline">Linux for everyone. English-native, homelab-ready.</p>
+    <p class="product-desc">Marika brings natural-language control to the homelab. No sysadmin experience required if you can describe what you want, Marika can do it. Deploy self-hosted services, configure your network, manage your server. All in plain English, all locally, on hardware you already own.</p>
+    <div class="product-meta">
+      <div class="meta-item"><span class="meta-label">Model</span><span class="meta-val">~3B quantized</span></div>
+      <div class="meta-div"></div>
+      <div class="meta-item"><span class="meta-label">Base OS</span><span class="meta-val">Rocky Linux 9</span></div>
+      <div class="meta-div"></div>
+      <div class="meta-item"><span class="meta-label">Runs</span><span class="meta-val">Fully local</span></div>
+      <div class="meta-div"></div>
+      <div class="meta-item"><span class="meta-label">Status</span><span class="meta-val" style="color:#4ade80">Active buildout</span></div>
+    </div>
+  </div>
+
+  <div class="section" style="padding-top:0">
+    <div class="section-label">For who</div>
+    <div class="section-title">Designed for the<br>curious builder.</div>
+    <p class="section-sub">You know what you want to do. Marika handles the Linux part.</p>
+
+    <div class="use-cases">
+      <div class="uc"><span class="uc-dot">◆</span><div class="uc-text"><strong>Homelabbers</strong>Set up and manage servers, containers, and services without memorizing every command.</div></div>
+      <div class="uc"><span class="uc-dot">◆</span><div class="uc-text"><strong>Self-hosters</strong>Deploy Nextcloud, Jellyfin, Home Assistant let Marika handle the configuration.</div></div>
+      <div class="uc"><span class="uc-dot">◆</span><div class="uc-text"><strong>Students</strong>Learn Linux by doing, with a system that explains what it's doing and why.</div></div>
+      <div class="uc"><span class="uc-dot">◆</span><div class="uc-text"><strong>Tinkerers</strong>Experiment freely with a safety net that confirms before anything destructive runs.</div></div>
+      <div class="uc"><span class="uc-dot">◆</span><div class="uc-text"><strong>Developers new to ops</strong>Bridge the gap between writing code and running infrastructure.</div></div>
+      <div class="uc"><span class="uc-dot">◆</span><div class="uc-text"><strong>RPi & mini-PC builders</strong>Marika runs on modest hardware no GPU farm required.</div></div>
+    </div>
+  </div>
+
+  <div class="section" style="padding-top:0">
+    <div class="section-label">See it in action</div>
+    <div class="section-title">Plain English.<br>Real results.</div>
+
+    <div class="terminal" style="margin-top:40px">
+      <div class="terminal-bar">
+        <div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div>
+        <span class="terminal-title">marika bash</span>
+      </div>
+      <div class="terminal-body">
+        <div class="t-row"><span class="t-p">$</span><span class="t-cmd"> set up nextcloud for personal use</span></div>
+        <div class="t-row"><span class="t-dim">→ System: Rocky 9 · 16GB RAM · 2TB /data mounted</span></div>
+        <div class="t-row"><span class="t-dim">→ Plan: nextcloud + mariadb + nginx + php-fpm. Install 4 packages, write 3 configs.</span></div>
+        <div class="t-row"><span class="t-dim">Continue? [y/N]</span></div>
+        <div class="t-row"><span class="t-p">$</span><span class="t-cmd"> y</span></div>
+        <div class="t-row"><span class="t-out"><span class="t-ok">✓</span> mariadb installed and secured</span></div>
+        <div class="t-row"><span class="t-out"><span class="t-ok">✓</span> nextcloud 28 deployed at /var/www/nextcloud</span></div>
+        <div class="t-row"><span class="t-out"><span class="t-ok">✓</span> nginx configured · TLS ready → http://localhost</span></div>
+        <div class="t-gap"></div>
+        <div class="t-row"><span class="t-p">$</span><span class="t-cmd"> why is my disk filling up</span></div>
+        <div class="t-row"><span class="t-dim">→ Scanning /: found 47GB in /var/log/journal (unbounded retention)</span></div>
+        <div class="t-row"><span class="t-out">Recommend: set SystemMaxUse=2G in journald.conf, vacuum now. Apply? [y/N]</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" style="padding-top:0">
+    <div class="section-label">Features</div>
+    <div class="section-title">What Marika brings.</div>
+
+    <div class="grid-2" style="margin-top:40px">
+      <div class="grid-cell">
+        <div class="feat-icon" style="background:rgba(255,255,255,0.04);color:var(--text-2)">◈</div>
+        <h4>Purpose-trained model not a chatbot</h4>
+        <p>Marika ships a model trained on Linux — not a general assistant, not a chat interface. A terminal that understands English and knows what it's doing.</p>
+        <div class="corpus-pills" style="margin-top:16px">
+          <span class="corpus-pill">man pages</span>
+          <span class="corpus-pill">Arch wiki</span>
+          <span class="corpus-pill">self-hosting guides</span>
+          <span class="corpus-pill">community forums</span>
+        </div>
+      </div>
+      <div class="grid-cell">
+        <div class="feat-icon" style="background:rgba(74,222,128,0.1);color:#4ade80">◎</div>
+        <h4>Instant system awareness</h4>
+        <p>Marika reads your running system on every query no setup, no config, no environment description needed from you.</p>
+      </div>
+      <div class="grid-cell">
+        <div class="feat-icon" style="background:rgba(139,92,246,0.1);color:#a78bfa">⊕</div>
+        <h4>Safety by default</h4>
+        <p>Reads are instant. Writes confirm. Destructive operations require explicit sign-off. Nothing surprises you.</p>
+      </div>
+      <div class="grid-cell">
+        <div class="feat-icon" style="background:rgba(59,130,246,0.1);color:#60a5fa">≡</div>
+        <h4>Full audit trail</h4>
+        <p>Every operation logged what you asked, what ran, what changed. Roll back confidently, review your history.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="cta-strip">
+    <span class="badge badge-dim" style="margin-bottom:20px">Coming Soon</span>
+    <h2>Download Marika</h2>
+    <p>Marika is in active development. Be the first to know when it ships.</p>
+    <span class="btn btn-ghost" onclick="go('download')">Join the waitlist →</span>
+  </div>
+
+  <footer>
+    <div class="footer-inner">
+      <span class="footer-logo">Erdtree</span>
+      <div class="footer-links">
+        <span class="footer-link" onclick="go('home')">Home</span>
+        <span class="footer-link" onclick="go('radagon')">Radagon</span>
+        <span class="footer-link" onclick="go('download')">Download</span>
+      </div>
+      <span class="footer-copy">© 2026 Erdtree</span>
+    </div>
+  </footer>
+</div>
+
+<!-- ════════════════════════ RADAGON ════════════════════════ -->
+<div class="page" id="p-radagon">
+  <div class="product-hero">
+    <div class="eyebrow">
+      <div class="eyebrow-line"></div>
+      <span class="eyebrow-text">Linux Radagon · Primary</span>
+    </div>
+    <h1>Linux <span style="background:linear-gradient(180deg,#c41e30 15%,#6c0e1c 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text">Radagon</span></h1>
+    <p class="product-tagline">Enterprise Linux, spoken plainly.</p>
+    <p class="product-desc">Built for professional sysadmins and the teams that keep enterprise infrastructure running — data centers, cloud ops, platform engineering. Radagon reads your system, understands what you want, and does it — with confirmation on anything that matters and a full log of everything it touches.</p>
+    <div class="product-meta">
+      <div class="meta-item"><span class="meta-label">Model</span><span class="meta-val">7B–14B · Linux-trained</span></div>
+      <div class="meta-div"></div>
+      <div class="meta-item"><span class="meta-label">Base OS</span><span class="meta-val">Rocky Linux 9</span></div>
+      <div class="meta-div"></div>
+      <div class="meta-item"><span class="meta-label">Runs</span><span class="meta-val">Fully local</span></div>
+      <div class="meta-div"></div>
+      <div class="meta-item"><span class="meta-label">Target</span><span class="meta-val">Enterprise</span></div>
+      <div class="meta-div"></div>
+      <div class="meta-item"><span class="meta-label">Status</span><span class="meta-val" style="color:#4ade80">Active buildout</span></div>
+    </div>
+  </div>
+
+  <div class="section" style="padding-top:0">
+    <div class="section-label">For who</div>
+    <div class="section-title">Built for the people<br>who keep things running.</div>
+    <p class="section-sub">Radagon is for operators who work at scale and can't afford to guess.</p>
+
+    <div class="use-cases">
+      <div class="uc"><span class="uc-dot">◆</span><div class="uc-text"><strong>Sysadmins</strong>Manage services, configs, and infra across a fleet without translating every intent into command syntax.</div></div>
+      <div class="uc"><span class="uc-dot">◆</span><div class="uc-text"><strong>Data center operators</strong>Manage large infrastructure at scale with full system context and a complete audit trail on every action.</div></div>
+      <div class="uc"><span class="uc-dot">◆</span><div class="uc-text"><strong>Platform engineers</strong>Standardize operations across teams without standardizing on memorized command patterns.</div></div>
+      <div class="uc"><span class="uc-dot">◆</span><div class="uc-text"><strong>Security teams</strong>Harden systems, apply CVE remediations, and manage SELinux policy in plain English with a full log.</div></div>
+      <div class="uc"><span class="uc-dot">◆</span><div class="uc-text"><strong>On-call engineers</strong>Diagnose incidents fast. Radagon reads the journal, checks running services, and tells you what's wrong.</div></div>
+      <div class="uc"><span class="uc-dot">◆</span><div class="uc-text"><strong>Infrastructure teams</strong>Apply production config changes with confirmation gates, rollback logging, and no silent execution.</div></div>
+    </div>
+  </div>
+
+  <div class="section" style="padding-top:0">
+    <div class="section-label">Use cases</div>
+    <div class="section-title">Built for the real<br>production environment.</div>
+    <p class="section-sub">Trained on man pages, RHEL docs, CVE advisories, kernel mailing lists, and real incident reports.</p>
+
+    <div class="use-cases">
+      <div class="uc"><span class="uc-dot">◆</span><div class="uc-text"><strong>Incident diagnosis</strong>Describe the symptom. Radagon reads the journal, inspects services, checks resource pressure, and tells you what's wrong.</div></div>
+      <div class="uc"><span class="uc-dot">◆</span><div class="uc-text"><strong>Production config changes</strong>Apply nginx, systemd, or firewall changes with confirmation gates and full rollback logging.</div></div>
+      <div class="uc"><span class="uc-dot">◆</span><div class="uc-text"><strong>Fleet operations</strong>Describe what needs to happen across your fleet. Radagon handles translation and execution.</div></div>
+      <div class="uc"><span class="uc-dot">◆</span><div class="uc-text"><strong>Security hardening</strong>SELinux policies, firewall rules, CVE remediation guided, confirmed, and audited.</div></div>
+      <div class="uc"><span class="uc-dot">◆</span><div class="uc-text"><strong>Service management</strong>Manage systemd units, dependencies, and targets in plain English.</div></div>
+      <div class="uc"><span class="uc-dot">◆</span><div class="uc-text"><strong>Package management</strong>DNF operations, RPM inspection, dependency resolution all via natural language.</div></div>
+    </div>
+  </div>
+
+  <div class="section" style="padding-top:0">
+    <div class="section-label">See it in action</div>
+    <div class="section-title">Production-grade,<br>plainly stated.</div>
+
+    <div class="terminal" style="margin-top:40px">
+      <div class="terminal-bar">
+        <div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div>
+        <span class="terminal-title">radagon bash</span>
+      </div>
+      <div class="terminal-body">
+        <div class="t-row"><span class="t-p">$</span><span class="t-cmd"> why is postgres consuming 90% memory</span></div>
+        <div class="t-row"><span class="t-dim">→ System: 64GB RAM · PostgreSQL 15 · 142 active connections</span></div>
+        <div class="t-row"><span class="t-dim">→ Reading pg_stat_activity, shared_buffers, work_mem...</span></div>
+        <div class="t-gap"></div>
+        <div class="t-row"><span class="t-out"><span class="t-warn">shared_buffers</span> = 32GB (50% RAM within spec)</span></div>
+        <div class="t-row"><span class="t-out"><span class="t-warn">work_mem</span> = 256MB × 142 connections = <span class="t-err">36GB potential</span></span></div>
+        <div class="t-row"><span class="t-out">Recommend: reduce work_mem to 64MB. Reloads without restart. Apply? [y/N]</span></div>
+        <div class="t-gap"></div>
+        <div class="t-row"><span class="t-p">$</span><span class="t-cmd"> harden this server against ssh brute force</span></div>
+        <div class="t-row"><span class="t-dim">→ Reading: sshd_config, firewalld zones, fail2ban status</span></div>
+        <div class="t-row"><span class="t-out">Plan: enable fail2ban, MaxAuthTries=3, disable password auth, move SSH to :2222</span></div>
+        <div class="t-row"><span class="t-warn">⚠  This locks out password-based SSH. Key auth only after this point. Confirm? [y/N]</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" style="padding-top:0">
+    <div class="section-label">Architecture</div>
+    <div class="section-title">What makes Radagon<br>production-ready.</div>
+
+    <div class="grid-2" style="margin-top:40px">
+      <div class="grid-cell">
+        <div class="feat-icon" style="background:var(--accent-dim);color:var(--accent-bright)">⊕</div>
+        <h4>Deep system context</h4>
+        <p>Every query is prefixed with a live snapshot: kernel version, loaded modules, running services, open ports, disk health, journal tail, SELinux status. You never explain your environment.</p>
+      </div>
+      <div class="grid-cell">
+        <div class="feat-icon" style="background:rgba(74,222,128,0.1);color:#4ade80">✓</div>
+        <h4>Production permission model</h4>
+        <p>Read ops: instant. Write ops: confirm. Destructive or privileged ops: explicit sign-off, always logged. The permission seam is a first-class architectural component, not an afterthought.</p>
+      </div>
+      <div class="grid-cell">
+        <div class="feat-icon" style="background:rgba(139,92,246,0.1);color:#a78bfa">◈</div>
+        <h4>Not a chatbot. Trained on Linux.</h4>
+        <p>A model trained from the ground up on the real sources: man pages, RHEL docs, Arch wiki, CVE advisories, kernel mailing lists, and real incident reports. Not a general model dressed up for the occasion.</p>
+        <div class="corpus-pills" style="margin-top:16px">
+          <span class="corpus-pill">man pages</span>
+          <span class="corpus-pill">RHEL docs</span>
+          <span class="corpus-pill">CVE advisories</span>
+          <span class="corpus-pill">kernel mailing lists</span>
+          <span class="corpus-pill">incident reports</span>
+        </div>
+      </div>
+      <div class="grid-cell">
+        <div class="feat-icon" style="background:rgba(59,130,246,0.1);color:#60a5fa">≡</div>
+        <h4>Full audit spine</h4>
+        <p>Every operation logged end-to-end: timestamp, natural language input, translated command, stdout/stderr, exit code. Compliance-ready from day one.</p>
+      </div>
+      <div class="grid-cell">
+        <div class="feat-icon" style="background:rgba(248,113,113,0.1);color:#f87171">◉</div>
+        <h4>SELinux-aware</h4>
+        <p>Rocky Linux 9 runs SELinux enforcing by default. Radagon understands contexts, booleans, and policy it works with SELinux, not around it.</p>
+      </div>
+      <div class="grid-cell">
+        <div class="feat-icon" style="background:rgba(251,191,36,0.1);color:#fbbf24">⚡</div>
+        <h4>Performance is a feature</h4>
+        <p>Simple operations feel instant. The system context layer is optimized for p50 latency on common ops. Latency breaks the illusion so we don't let it.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="cta-strip">
+    <span class="badge badge-dim" style="margin-bottom:20px">Coming Soon</span>
+    <h2>Download Radagon</h2>
+    <p>Enterprise early access is being prioritized. Join the list.</p>
+    <span class="btn btn-ghost" onclick="go('download')">Join the waitlist →</span>
+  </div>
+
+  <footer>
+    <div class="footer-inner">
+      <span class="footer-logo">Erdtree</span>
+      <div class="footer-links">
+        <span class="footer-link" onclick="go('home')">Home</span>
+        <span class="footer-link" onclick="go('marika')">Marika</span>
+        <span class="footer-link" onclick="go('download')">Download</span>
+      </div>
+      <span class="footer-copy">© 2026 Erdtree</span>
+    </div>
+  </footer>
+</div>
+
+<!-- ════════════════════════ RADAHN ════════════════════════ -->
+<div class="page" id="p-radahn">
+  <div class="teaser">
+    <span class="badge badge-dim" style="margin-bottom:4px">Coming Soon</span>
+    <h1>Linux <span style="background:linear-gradient(180deg,#e86020 15%,#a03010 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text">Radahn</span></h1>
+    <p>For infrastructure at the largest scale.</p>
+    <div class="teaser-stats">
+      <div class="teaser-stat"><div class="teaser-stat-label">Model</div><div class="teaser-stat-val">TBA</div></div>
+      <div class="teaser-stat"><div class="teaser-stat-label">Target</div><div class="teaser-stat-val">TBA</div></div>
+      <div class="teaser-stat"><div class="teaser-stat-label">Status</div><div class="teaser-stat-val">Future</div></div>
+    </div>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;justify-content:center">
+      <span class="btn btn-ghost" onclick="go('download')">Get notified →</span>
+    </div>
+  </div>
+
+  <footer>
+    <div class="footer-inner">
+      <span class="footer-logo">Erdtree</span>
+      <div class="footer-links">
+        <span class="footer-link" onclick="go('home')">Home</span>
+        <span class="footer-link" onclick="go('radagon')">Radagon</span>
+        <span class="footer-link" onclick="go('download')">Download</span>
+      </div>
+      <span class="footer-copy">© 2026 Erdtree</span>
+    </div>
+  </footer>
+</div>
+
+<!-- ════════════════════════ STARSCOURGE ════════════════════════ -->
+
+<!-- ════════════════════════ DOWNLOAD ════════════════════════ -->
+<div class="page" id="p-download">
+  <div class="dl-hero">
+    <div class="hero-badge" style="margin-bottom:20px">
+      <div class="badge-pulse"></div>
+      In active development
+    </div>
+    <h1>Downloads</h1>
+    <p>Linux Marika, Linux Radagon, and Linux Radahn are in active development. Enter your email to be notified the moment each ships.</p>
+  </div>
+
+  <div class="dl-grid">
+    <div class="dl-card primary">
+      <span class="badge" style="background:rgba(176,24,40,0.1);color:#b01828">Primary</span>
+      <h3>Linux <span style="color:#b01828">Radagon</span></h3>
+      <p>Linux for enterprise teams and professional sysadmins. Trained on Linux. Runs locally on Rocky Linux 9.</p>
+      <div class="dl-btn">
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M6.5 1v7.5M3 6l3.5 3L10 6M1.5 11h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Download ISO Coming Soon
+      </div>
+    </div>
+
+    <div class="dl-card">
+      <span class="badge" style="background:rgba(240,192,64,0.1);color:#f0c040">Active buildout</span>
+      <h3>Linux <span style="color:#f0c040">Marika</span></h3>
+      <p>English-native Linux for hobbyists, students, and homelabbers. Lightweight ~3B quantized model runs on anything.</p>
+      <div class="dl-btn">
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M6.5 1v7.5M3 6l3.5 3L10 6M1.5 11h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Download ISO Coming Soon
+      </div>
+    </div>
+
+    <div class="dl-card" style="opacity:0.45">
+      <span class="badge badge-dim">Future</span>
+      <h3>Linux Radahn</h3>
+      <p>Hyperscale intelligence. Dedicated infrastructure. Coming after Radagon ships.</p>
+      <div class="dl-btn">Not yet announced</div>
+    </div>
+
+  </div>
+
+  <div class="notify">
+    <p>Get notified when the first distributions ship.</p>
+    <div class="notify-row">
+      <input class="notify-input" type="email" placeholder="you@company.com" id="notify-email">
+      <button class="notify-btn" id="notify-submit" onclick="handleNotify()">Notify me</button>
+    </div>
+  </div>
+
+  <footer>
+    <div class="footer-inner">
+      <span class="footer-logo">Erdtree</span>
+      <div class="footer-links">
+        <span class="footer-link" onclick="go('home')">Home</span>
+        <span class="footer-link" onclick="go('marika')">Marika</span>
+        <span class="footer-link" onclick="go('radagon')">Radagon</span>
+      </div>
+      <span class="footer-copy">© 2026 Erdtree</span>
+    </div>
+  </footer>
+</div>
+
+<script>
+  const PAGES = ['home','marika','radagon','radahn','download'];
+
+  function go(page) {
+    PAGES.forEach(p => document.getElementById('p-'+p).classList.remove('active'));
+    const el = document.getElementById('p-'+page);
+    if (el) {
+      el.classList.add('active');
+      window.scrollTo({ top: 0, behavior: 'instant' });
+      history.pushState(null, '', '#' + (page === 'home' ? '' : page));
+    }
+  }
+
+  function handleNotify() {
+    const input = document.getElementById('notify-email');
+    const btn = document.getElementById('notify-submit');
+    if (!input.value || !input.value.includes('@')) {
+      input.style.borderColor = 'rgba(248,113,113,0.5)';
+      input.focus();
+      setTimeout(() => input.style.borderColor = '', 1400);
+      return;
+    }
+    btn.textContent = "You're on the list ✓";
+    btn.style.background = '#4ade80';
+    btn.style.color = '#000';
+    btn.disabled = true;
+    input.disabled = true;
+  }
+
+  // Hash routing
+  const hash = location.hash.replace('#','');
+  if (hash && PAGES.includes(hash)) go(hash);
+
+  // Browser back/forward
+  window.addEventListener('popstate', () => {
+    const h = location.hash.replace('#','');
+    go(h && PAGES.includes(h) ? h : 'home');
+  });
+</script>
+</body>
+</html>
