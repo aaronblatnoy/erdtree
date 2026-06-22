@@ -18,5 +18,8 @@ dist/
 *.iso
 build/staging/
 
+# Generated RAG index + staged CC-BY-SA sources + audit evidence (not repo-tracked)
+runtime/
+
 # OS
 .DS_Store

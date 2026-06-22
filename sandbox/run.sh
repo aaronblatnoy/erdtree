@@ -65,6 +65,7 @@ exec podman run --rm -it \
   -e ERDTREE_MODEL="$MODEL" \
   -e ERDTREE_BASE_URL=http://localhost:11434 \
   -e ERDTREE_AUDIT_LOG=/var/log/erdtree-audit.jsonl \
+  -e ERDTREE_CORPUS_INDEX="${ERDTREE_CORPUS_INDEX:-/opt/erdtree/runtime/rag/corpus.db}" \
   -e PYTHONDONTWRITEBYTECODE=1 \
   -w /root \
   erdtree-sandbox:latest \

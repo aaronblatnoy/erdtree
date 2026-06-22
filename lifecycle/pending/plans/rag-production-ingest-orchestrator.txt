@@ -1,0 +1,758 @@
+=====================================================================
+BUILDOUT PHASE PLAN: RAG Production Ingest -> Index Orchestrator
+                     (turn real docs into a shippable corpus index +
+                      wire it into the docs.retrieve tool)
+Generated: 2026-06-22
+Scope: Build the ONE missing piece of Erdtree's local RAG — a single
+       production orchestrator that runs build_corpus (man pages + Rocky
+       admin docs) -> embed -> build_index into a durable, discoverable
+       corpus.db, then makes core/tools/docs.py retrieve against it, proven
+       by a real grounded lookup ("how do I open a firewall port" ->
+       firewalld passage).
+Feeds (downstream, NOT built here):
+       lifecycle/brainstorms/generic-command-tool.md — the populated index
+       is the prerequisite for (a) grounding a small local model so a future
+       generic gated `command` tool emits CORRECT RHEL commands, and (b)
+       seeding a destructive-command corpus for the classifier audit. This
+       plan builds the index; the command tool + classifier audit are a
+       follow-on plan (see Phase 6 / §13).
+Builds on (frozen, DO NOT rebuild): docs/decisions/0003-vector-index.md,
+       rag/build_corpus.py, rag/embed.py, rag/index.py, rag/retrieve.py,
+       core/tools/docs.py. This plan is ADDITIVE — it adds an orchestrator
+       and a config wiring step; it touches NO frozen signature.
+=====================================================================
+
+## 0. CONTEXT & GOALS
+
+Problem statement
+  Every component of the local RAG pipeline EXISTS and is tested in isolation
+  (51 rag tests pass in the project venv), but nothing connects them on REAL
+  sources end to end. The current state of the pipeline:
+
+    build_corpus()  --writes-->  corpus.jsonl     [reader for man + rocky docs OK]
+         |  ... GAP: no production glue runs the next two steps on real sources
+    embed_texts()   --produces-> vectors          [hashed embedder, offline OK]
+    build_index()   --writes-->  corpus.db        [sqlite-vec single file OK]
+    retrieve()      <--reads--   corpus.db        [frozen engine OK]
+    docs.retrieve   --calls-->   retrieve()       [env-knob index path; degrades OK]
+
+  The ONLY production glue that exists is rag/fixtures/build_fixture_index.py,
+  which is HARDCODED to the 12-chunk hand-curated test fixture. The CLI in
+  build_corpus.__main__ writes a JSONL but stops there (no embed, no index).
+  So today there is NOTHING between "writes a fixture jsonl" and "builds a
+  fixture .db" that runs on real man pages + real Rocky docs and produces a
+  shippable index the docs tool can point at. That single orchestrator is the
+  deliverable.
+
+Success criteria (measurable)
+  SC1  A new module rag/build_index_prod.py (the orchestrator) runs, on this
+       dev host's venv, the full chain build_corpus(man + rocky docs) ->
+       embed_texts -> build_index, and writes a single durable corpus.db at a
+       configured path. Zero network calls (I1). VERIFIED by a real-content
+       smoke test that builds an index from a capped man set + the staged
+       Rocky admin docs.
+  SC2  docs.retrieve, with ERDTREE_CORPUS_INDEX pointed at that corpus.db,
+       returns a GROUNDED firewalld passage for "how do I open a firewall
+       port" — a real retrieval-quality assertion, not just "N >= 1". VERIFIED
+       by a test that asserts the top result's source contains "firewall" and
+       the text mentions a port/zone concept.
+  SC3  Corpus sources are made DURABLE + REPRODUCIBLE: a documented, scripted
+       step stages the Rocky docs from the ephemeral /tmp clone into a durable
+       location (under the repo for dev / /var/lib/erdtree for target), with
+       the English-only, admin-relevant filter applied (exclude *.xx.md
+       translations). Re-running the orchestrator from the durable source is
+       deterministic (stable chunk_ids).
+  SC4  The license-posture GATE is resolved by an OWNER decision recorded in a
+       new decision doc docs/decisions/0004; BOTH branches (bundle-the-index-
+       with-attribution vs recipe-only-firstboot) are scoped so whichever the
+       owner picks is mechanical to execute. man pages (GPL-2.0) are bundleable
+       under either branch; the gate is only about the CC-BY-SA Rocky docs +
+       the index that embeds their text.
+  SC5  Latency + size budgets are MEASURED on the pilot index (not assumed) and
+       recorded: chunk count, build time, on-disk size, p50 query latency. Must
+       stay inside the 0003 budget (~3-5 GB SSD ceiling at full scale; sub-ms-
+       to-low-ms query). The pilot (capped man + Rocky admin docs) is far under
+       this; the projection to full coverage is documented.
+  SC6  Everything additive: docs/decisions/0003 stays FROZEN and unedited; the
+       retrieve()/Chunk signature is untouched; core/agent/episodic.py's reuse
+       of the engine via a SECOND index_path is unaffected (a test asserts the
+       episodic audit-log index path still builds + queries independently).
+
+Non-goals (explicitly OUT of scope here)
+  - The generic gated `command` tool itself (brainstorm §5) — follow-on plan.
+  - The classifier adversarial audit (brainstorm §4) — follow-on plan; this
+    plan only NOTES that the index it builds is the corpus those steps mine.
+  - The PRODUCTION sentence-transformer embed (backend="st", 384-d) on the GPU
+    host — DEFERRED-TO-MOSSAD (D1). The pilot ships the hashed embedder; the
+    orchestrator is embedder-agnostic so swapping needs only a flag + re-run.
+  - Arch wiki + Stack Overflow + CVE sources — they stay RECIPE_ONLY_SOURCES
+    and are out of pilot scope; the orchestrator leaves their firstboot path
+    intact and simply does not populate them.
+  - Scraping docs.redhat.com — VERIFIED bot-walled (403 even with browser UA);
+    canonical RHEL content is browser-manual-PDF only. NOT in scope. Rocky docs
+    + local man pages are the automatable backbone.
+  - ISO packaging / RPM (a Phase 11 concern in the parent plan). This plan
+    produces the index + the recipe; packaging is downstream.
+
+Assumptions made (call out if any is wrong — it reshapes a phase)
+  A1  The project venv at /home/aaron/erdtree/.venv is the build environment.
+      sqlite-vec 0.1.9 is installed THERE (vec0 v0.1.9 loads), NOT in system
+      python3 (system import fails). VERIFIED this session. Every orchestrator
+      run + every new test that touches an index MUST run under .venv/bin/python.
+      [CORRECTION to the brief: the brief said "sqlite-vec vec0 loads" — true
+      only inside the venv; the system interpreter has no sqlite_vec. The plan
+      pins the venv explicitly so the executor does not hit ModuleNotFoundError.]
+  A2  groff is present (/usr/bin/groff) so man-page rendering works on this dev
+      host. VERIFIED. (On a real Rocky target this is also present; not a gap.)
+  A3  /tmp/rocky-docs is the existing CC-BY-SA-4.0 clone of
+      rocky-linux/documentation: 475 English .md after excluding *.xx.md
+      translations; admin-relevant guides confirmed present (firewalld.md,
+      learning_selinux.md, dnf_package_manager.md, basic_network_configuration
+      .md, ssh_public_private_keys.md, user/group labs, systemd guides).
+      VERIFIED this session. Because /tmp is ephemeral, Phase 1 makes this
+      durable.
+  A4  The hashed embedder (dim 256) is the PILOT embedder. Its retrieval quality
+      ceiling is low (lexical-ish), but the firewall query already returns a
+      correct grounded passage at 21 ms on a 1677-chunk real index (VERIFIED
+      this session). This is the deliberate offline/ISO trade in 0003; treated
+      as a RISK with a swap path, not a blocker.
+  A5  core/agent/main.py already plumbs ERDTREE_CORPUS_INDEX through
+      AppConfig.from_env (field `corpus_index`, "" -> docs/episodic off) and
+      imports core.tools.docs as a registration side-effect. VERIFIED. So
+      wiring is config + a documented default path, not new plumbing.
+  A6  pytest is NOT installed in the venv by default but unittest is; existing
+      rag tests are unittest-based and also run under pytest when present. New
+      tests are written unittest-style so they run with
+      `.venv/bin/python -m unittest` regardless (matches D5 of the parent plan).
+
+## 1. ARCHITECTURE OVERVIEW
+
+How this fits into the existing system
+  This plan adds exactly ONE new production module (the orchestrator) plus a
+  corpus-source staging step, a config default, a decision doc, and tests. It
+  sits in the rag/ layer, OUTSIDE core/, and never adds a runtime import to the
+  core agent. The core agent's only contact with the index remains the existing
+  read-only env knob ERDTREE_CORPUS_INDEX consumed by core/tools/docs.py.
+
+  Data flow (build-time, offline, no network — I1):
+
+    durable corpus sources                  rag/build_index_prod.py
+    ----------------------                  (THE NEW ORCHESTRATOR)
+    /usr/share/man  (GPL-2.0) -----+
+                                   +--> build_corpus() --> corpus.jsonl
+    <durable>/rocky-docs/  --------+         |
+       (CC-BY-SA-4.0, filtered)              v
+                                        embed_texts(backend=hashed|st)
+                                             |
+                                             v
+                                        build_index() --> corpus.db  (sqlite-vec)
+                                             |                 single file
+                                             v
+                                        write LICENSES manifest + meta record
+
+  Data flow (runtime, the only core contact — already exists, unchanged):
+
+    ERDTREE_CORPUS_INDEX=<corpus.db>  --> core/tools/docs.py _op_retrieve
+                                            --> rag.retrieve.retrieve(...)
+                                            --> "[source]\n<passage>" to the loop
+    (absent/unreadable index -> "Retrieved 0 reference passages." — I9 degrade)
+
+Affected layers
+  rag/        : NEW orchestrator + a source-staging helper + LICENSES regen.
+  docs/decisions/ : NEW 0004 (license posture). 0003 stays frozen, untouched.
+  core/       : NO code change. A documented config DEFAULT for the index path
+                is the only contact; ERDTREE_CORPUS_INDEX plumbing already exists.
+  tests/      : NEW real-content smoke test + retrieval-quality test +
+                episodic-reuse regression. All run under .venv unittest.
+  scripts/ or docs : a reproducible "stage sources" recipe + a "build index"
+                invocation, documented for both dev host and firstboot.
+
+Invariants this plan must preserve
+  I1  No network at build OR runtime. build_corpus/embed/index already open no
+      socket; the orchestrator adds none. The Rocky docs are already on disk
+      (git clone done out-of-band, once); the orchestrator never fetches.
+  I2  No AI/LLM/model/inference/embedding/retrieval terms in any USER-FACING
+      string. Chunk TEXT feeds the model prompt (acceptable — it is reference
+      content), but any operator-facing artifact (the source label, a build
+      summary printed to a console an operator might see, the LICENSES manifest
+      headers) stays I2-clean. The docs tool summary ("Retrieved N reference
+      passages.") is untouched. A test greps the orchestrator's stdout + the
+      source labels of produced chunks against core.agent.prompt._FORBIDDEN_AI_TERMS.
+  I6  The index path stays an OPAQUE env knob (ERDTREE_CORPUS_INDEX); the
+      orchestrator does not bake a tier name into the path or the artifact.
+  I9  docs.retrieve still degrades empty-but-valid when the index is absent —
+      the production index makes it NON-empty; the degrade path is untouched.
+  0003 FROZEN: sqlite-vec backend, single-.db format, retrieve() signature,
+      Chunk shape, lexical rerank. Additive only. Episodic reuse via a SECOND
+      index_path must keep working.
+
+## 2. AFFECTED SURFACE AREA
+
+Files to CREATE
+  rag/build_index_prod.py
+      The production orchestrator. A run_build(...) function + a __main__ CLI.
+      Composes build_corpus -> embed_texts -> build_index; records meta;
+      regenerates LICENSES; prints an I2-clean one-line summary.
+  rag/stage_sources.py  (or a documented shell recipe under scripts/)
+      Copies the English, admin-relevant Rocky docs from a source clone into a
+      durable, filtered tree (excludes *.xx.md). Idempotent; deterministic.
+  docs/decisions/0004-corpus-license-posture.md
+      Records the OWNER decision (bundle-with-attribution vs recipe-only) with
+      both branches scoped. (Created as a DRAFT with the gate open; finalized
+      when the owner picks — see Phase 4.)
+  tests/test_rag_build_index_prod.py
+      Real-content smoke test (capped man + staged Rocky docs -> real .db) +
+      retrieval-quality assertion (firewall query -> grounded firewalld passage)
+      + episodic-reuse regression. unittest-style, skipUnless sqlite_vec.
+  docs/rag-corpus-build.md  (operator/runbook doc, optional but recommended)
+      The reproducible recipe for dev host AND firstboot, both posture branches.
+
+Files to MODIFY
+  rag/build_corpus.py
+      Minimal: extend the __main__ CLI is OPTIONAL (the orchestrator supersedes
+      it). The ONE substantive change to consider: iter_rhel_chunks currently
+      labels source as "Rocky/RHEL docs (<filename>)" — keep as-is (I2-clean,
+      provenance-bearing). Do NOT alter the reader signatures (other callers +
+      tests bind them). If the orchestrator needs an English-only / admin filter
+      it applies it at the STAGING layer (Phase 1), not inside the reader, to
+      avoid touching the frozen-ish reader contract. Net: likely NO edit here,
+      or a docstring-only note pointing at the orchestrator. Decide in Phase 2.
+  core/agent/main.py
+      NO code edit required (corpus_index already plumbed). OPTIONAL: update the
+      inline comment on the `corpus_index` field / a docstring to point at the
+      durable default path the orchestrator writes. Treat as documentation only.
+  rag/LICENSES.md
+      Regenerated by the orchestrator (write_license_manifest already exists);
+      its "Index Bundling Note" section is reconciled with the 0004 decision.
+
+Migrations / schema
+  None. The sqlite-vec on-disk format is frozen in 0003/rag.index and unchanged.
+  The "schema" here is the meta(key,value) table; the orchestrator writes the
+  same keys build_index already writes (schema_version, dim, embed_backend,
+  embed_model). OPTIONAL additive meta keys (NOT required, but cheap + useful
+  for provenance): "built_at" (UTC date), "source_counts" (man=N,rocky=M),
+  "corpus_sha" (a hash of the corpus.jsonl). Additive only — retrieve.read_meta
+  ignores unknown keys. Decide in Phase 2; if added, note it in 0004, NOT 0003.
+
+New env vars / config
+  No NEW env var is strictly required. The plan DOCUMENTS a default durable path
+  and sets ERDTREE_CORPUS_INDEX to it for the dev demo + the firstboot recipe:
+      Dev host default:  <repo>/runtime/rag/corpus.db   (gitignored)
+      Target default:    /var/lib/erdtree/corpus.db
+  These are values for the EXISTING ERDTREE_CORPUS_INDEX knob, not new knobs.
+
+New dependencies
+  None. sqlite-vec 0.1.9 (already in .venv, pinned in rag/requirements.txt) is
+  the only backend dep, and only the BUILD/test path needs it. The pilot uses
+  the stdlib hashed embedder (zero deps). sentence-transformers/torch stay
+  DEFERRED-TO-MOSSAD and are NOT required by this plan.
+
+## 3. PHASES
+
+--------------------------------------------------------------------
+### PHASE 1: Durable, reproducible corpus sources — GOAL: kill the /tmp dependency
+--------------------------------------------------------------------
+   Prerequisites: none.
+   Deliverables:
+     - rag/stage_sources.py (or scripts/stage-rocky-docs.sh): copies English,
+       admin-relevant Rocky docs from a source clone into a durable filtered
+       tree. Excludes *.xx.md translations (regex: \.[a-z][a-z]\.md$). Optional
+       admin-relevance allowlist (network/SELinux/firewall/dnf/systemd/users/
+       disk/ssh/services) to keep the pilot tight; full-coverage path documented.
+     - A documented durable location: <repo>/runtime/rag/sources/rocky-docs/
+       for dev (gitignored — it is CC-BY-SA content, not repo-tracked), and
+       /var/lib/erdtree/rocky-docs/ for the target. Man pages need no staging
+       (already at /usr/share/man on every box).
+     - A note recording HOW the clone was obtained (git clone of
+       rocky-linux/documentation) so the source is reproducible without scraping.
+   Steps:
+     1. Write the staging helper: walk a SOURCE dir (default /tmp/rocky-docs or
+        a passed --src), select *.md, drop *.xx.md, optionally intersect with the
+        admin allowlist, copy preserving enough path to keep filenames unique,
+        into a DEST durable dir. Idempotent (overwrite-safe), deterministic order.
+     2. Run it once on this host: /tmp/rocky-docs -> runtime/rag/sources/rocky-docs/.
+        Expect ~83 admin-relevant (allowlist) or up to 475 (full English) files.
+     3. Add runtime/ to .gitignore if not already (sources are not repo-tracked).
+     4. Document the firstboot variant: on target the source is a pre-placed
+        clone or the rocky-docs RPM under /usr/share/doc; the helper points there.
+   Validation:
+     - `.venv/bin/python rag/stage_sources.py --src /tmp/rocky-docs --dest
+       runtime/rag/sources/rocky-docs` exits 0 and the dest contains only English
+       .md (a test/grep confirms zero files matching \.[a-z][a-z]\.md$).
+     - firewalld.md, learning_selinux.md, dnf_package_manager.md present in dest.
+     - Re-running produces an identical file set (idempotent).
+   Risks / Edge cases:
+     - /tmp clone disappears before staging -> staging fails loud with a clear
+       "source not found; clone rocky-linux/documentation to <path>" message.
+     - Duplicate basenames across guide subdirs collide on flat copy -> preserve
+       a path-derived unique name OR keep a shallow subdir; chunk_ids are content-
+       hashed so collisions only affect the human label, not correctness.
+     - Over-aggressive allowlist drops a useful doc -> allowlist is a documented,
+       editable constant; full-English mode is one flag away.
+   Subagent orchestration:
+     - Execution shape: [SINGLE]
+     - REQUIRED subagent_type: general-purpose
+     - REQUIRED model: sonnet  (file-walk + filter logic, light reasoning)
+     - Run in background: no (fast; Phase 2 needs the staged dir)
+     - Brief template:
+       "Execute Phase 1 of <PLAN_FILE_PATH>. Your slice: write rag/stage_sources.py
+        and stage the Rocky docs. Read §3 Phase 1 + §0 A3. Touch only
+        rag/stage_sources.py, .gitignore, and create runtime/rag/sources/.
+        Run under .venv/bin/python. Validation: dest has English-only .md
+        (zero *.xx.md), firewalld.md present, idempotent re-run.
+        Evidence: paste the dest file count + the grep-for-translations result.
+        Print one-line summary and exit."
+
+--------------------------------------------------------------------
+### PHASE 2: The production orchestrator — GOAL: corpus -> embed -> index in one command
+--------------------------------------------------------------------
+   Prerequisites: Phase 1 (durable sources exist).
+   Deliverables:
+     - rag/build_index_prod.py with:
+         run_build(*, man_dirs, rocky_doc_dirs, output_index, output_jsonl,
+                   embed_backend="hashed", embed_model="", dim=256,
+                   max_man_pages=None, max_rocky_files=None) -> BuildReport
+       which: calls build_corpus(man_dirs=, rhel_doc_dirs=, output_jsonl=,
+       arch/so/cve dirs left at their nonexistent defaults so RECIPE_ONLY stay
+       empty), reads the chunks back (or uses the returned list), calls
+       embed_texts(texts, backend=, dim=, model_name=), calls build_index(
+       output_index, chunks, vectors, dim=, embed_backend=, embed_model=),
+       regenerates rag/LICENSES.md, and returns a report (chunk count, per-source
+       counts, index bytes, elapsed).
+     - A __main__ CLI mirroring build_corpus's CLI style: --man-dir,
+       --rocky-dir, --output-index, --output-jsonl, --backend, --dim,
+       --max-man-pages, --max-rocky-files.
+     - OPTIONAL additive meta keys (built_at, source_counts) if Phase 2 decides
+       they are worth it (additive, retrieve ignores unknown keys).
+   Steps:
+     1. Implement run_build composing the three frozen functions. Do NOT
+        reimplement chunking/embedding/indexing — call the existing APIs exactly.
+     2. Map CorpusChunk: build_corpus returns RawChunk (chunk_id,source,license,
+        text); rag.index.CorpusChunk is the same 4 fields — convert 1:1 (the
+        fixture builder is the template; generalize it from hardcoded JSONL to a
+        live build_corpus call).
+     3. Keep the run OFFLINE + embedder-agnostic: backend default "hashed"
+        (pilot), backend "st" path present but guarded (mossad-only, lazy import).
+     4. Emit an I2-CLEAN summary line (e.g. "Built reference index: 1677 passages,
+        3.0 MB.") — NO forbidden terms. The chunk text itself is reference
+        content and may contain technical words, but the orchestrator's own
+        printed strings stay clean.
+     5. Write the durable index to output_index (default <repo>/runtime/rag/
+        corpus.db on dev). Overwrite-safe (build_index unlinks an existing file).
+   Validation:
+     - `.venv/bin/python -m rag.build_index_prod --man-dir /usr/share/man
+       --rocky-dir runtime/rag/sources/rocky-docs --output-index runtime/rag/
+       corpus.db --max-man-pages 60` exits 0, prints the summary, and corpus.db
+       exists with size > 1 MB and < the 0003 budget.
+     - Re-running with the same inputs yields the same chunk count (deterministic
+       chunk_ids; build_index overwrites cleanly).
+     - A quick in-process retrieve() against the produced .db returns >= 1 result
+       for "firewall port" (full quality assertion is Phase 3's test).
+   Risks / Edge cases:
+     - sqlite_vec absent (wrong interpreter) -> orchestrator must run under .venv;
+       if build_index raises RuntimeError("sqlite-vec backend not installed"),
+       fail loud with the venv hint (do NOT silently produce no index).
+     - A man page groff-renders empty / a Rocky doc is tiny -> already filtered
+       by the readers' <80/<60 char floors; no special handling needed.
+     - Full (uncapped) man build is large + slowish (~1700+ man1 pages alone) ->
+       the pilot CAPS man pages; full coverage is a documented, longer run (still
+       offline, still inside budget per the 0003 extrapolation). max_* caps are
+       the lever; §5 records the chosen pilot cap + the full-coverage projection.
+     - Embedder swap (hashed->st) must not change the index FORMAT — it doesn't;
+       embed_backend/dim are recorded in meta and retrieve reads them back.
+   Subagent orchestration:
+     - Execution shape: [SEQUENTIAL — depends on Phase 1]
+     - REQUIRED subagent_type: general-purpose
+     - REQUIRED model: sonnet  (compose frozen APIs; the fixture builder is the
+       template — moderate, not frontier, reasoning)
+     - Run in background: no (Phase 3's test gates on this artifact)
+     - Brief template:
+       "Execute Phase 2 of <PLAN_FILE_PATH>. Your slice: write rag/build_index_prod.py
+        (orchestrator) generalizing rag/fixtures/build_fixture_index.py from a
+        hardcoded JSONL to a live build_corpus run over man + staged Rocky docs.
+        Read §3 Phase 2 + §1 data-flow. Touch only rag/build_index_prod.py (and
+        rag/build_corpus.py docstring if needed). Call the FROZEN functions
+        build_corpus/embed_texts/build_index unchanged. Run under .venv/bin/python.
+        Validation: CLI builds runtime/rag/corpus.db (>1MB), deterministic re-run,
+        in-process retrieve('firewall port') >= 1 hit. I2-clean summary string.
+        Evidence: paste the build summary + index byte size. Print one-line summary
+        and exit."
+
+--------------------------------------------------------------------
+### PHASE 3: Wire docs.retrieve + prove a real grounded lookup — GOAL: end-to-end retrieval
+--------------------------------------------------------------------
+   Prerequisites: Phase 2 (a real corpus.db exists).
+   Deliverables:
+     - tests/test_rag_build_index_prod.py with THREE test classes:
+         (a) Smoke: run_build over a capped man set + staged Rocky docs ->
+             a real .db in a tmp dir; assert it opens + read_meta is sane.
+         (b) Retrieval-quality: point retrieve() at that .db, query "how do I
+             open a firewall port", assert top result source contains "firewall"
+             (case-insensitive) AND text mentions port/zone — the SC2 assertion.
+             Falls back to a clear skip if Rocky docs absent (CI portability).
+         (c) Episodic-reuse regression: build a SECOND tiny index at a different
+             index_path from synthetic chunks, query it independently, assert it
+             works — proving the engine reuse (0003 / episodic) is unbroken.
+     - Documented config: set ERDTREE_CORPUS_INDEX=<runtime/rag/corpus.db> so
+       core/tools/docs.py retrieves against the production index. A manual-QA
+       snippet shows docs.retrieve returning a non-empty, grounded result.
+   Steps:
+     1. Write the three test classes (unittest, @skipUnless(sqlite_vec present)).
+        Use the orchestrator from Phase 2 for (a)/(b); synthetic chunks for (c).
+     2. Verify the docs tool path: with ERDTREE_CORPUS_INDEX set, call
+        core.tools.docs._op_retrieve({"query":"how do I open a firewall port"})
+        in a subprocess (the index path is read at module load — set the env
+        BEFORE import) and assert summary == "Retrieved N reference passages."
+        with N>=1 and the stdout contains a firewalld source header.
+     3. Confirm I9 still holds: with ERDTREE_CORPUS_INDEX unset/empty, the tool
+        returns "Retrieved 0 reference passages." (degrade unchanged).
+     4. Add an I2 leakage test: grep the orchestrator stdout + the produced
+        chunk source labels against core.agent.prompt._FORBIDDEN_AI_TERMS.
+   Validation:
+     - `.venv/bin/python -m unittest tests.test_rag_build_index_prod` passes all
+       classes (or skips cleanly only when sqlite_vec/Rocky docs truly absent).
+     - The firewall retrieval-quality assertion PASSES on the real index (proven
+       feasible this session: top-3 were all firewalld passages at 21 ms).
+     - Existing suites still green: `.venv/bin/python -m unittest tests.test_rag_
+       retrieve tests.test_rag_index tests.test_tools_docs` (51 tests) — no
+       regression (additive change).
+   Risks / Edge cases:
+     - docs.py reads _INDEX_PATH at IMPORT time (module-level) — the test MUST
+       set ERDTREE_CORPUS_INDEX before importing core.tools.docs, or run the
+       check in a subprocess. Note this explicitly in the test.
+     - Hashed-embedder quality: the firewall query works, but some queries may
+       rank a man page above the ideal Rocky doc. The assertion is scoped to the
+       firewall case (known-good) + "source mentions firewall"; broader quality
+       is a RISK tracked for the st-embedder swap (D1), not a Phase-3 failure.
+     - Episodic index uses license='' chunks — assert the engine tolerates empty
+       license (it does; Chunk.license is just a passthrough string).
+   Subagent orchestration:
+     - Execution shape: [SEQUENTIAL — depends on Phase 2]
+     - REQUIRED subagent_type: general-purpose
+     - REQUIRED model: sonnet  (test authoring + a real assertion; moderate)
+     - Run in background: no (this is the SC1/SC2 gate; results needed inline)
+     - Brief template:
+       "Execute Phase 3 of <PLAN_FILE_PATH>. Your slice: write
+        tests/test_rag_build_index_prod.py (smoke + retrieval-quality firewall
+        assertion + episodic-reuse regression) and verify docs.retrieve against
+        the Phase-2 index. Read §3 Phase 3 + §0 SC2/SC6. Touch only the test file.
+        Run under .venv/bin/python -m unittest. CRITICAL: set ERDTREE_CORPUS_INDEX
+        before importing core.tools.docs (module-level read) or use a subprocess.
+        Validation: firewall query top result source contains 'firewall'; 51
+        existing rag/docs tests stay green. Evidence: paste the unittest summary.
+        Print one-line summary and exit."
+
+--------------------------------------------------------------------
+### PHASE 4: License-posture GATE — GOAL: owner picks bundle vs recipe, recorded in 0004
+--------------------------------------------------------------------
+   Prerequisites: Phase 3 (we now have a real index whose text is CC-BY-SA Rocky
+                  content — the artifact the gate is actually about).
+   *** THIS IS AN EXPLICIT OWNER DECISION GATE — do not silently resolve. ***
+   Deliverables:
+     - docs/decisions/0004-corpus-license-posture.md scoping BOTH branches:
+         BRANCH A — Bundle-the-index-with-attribution:
+           Ship corpus.db inside the ISO. Requires: a NOTICE/attribution file
+           crediting Red Hat, Inc. + Rocky Linux contributors (CC-BY-SA-4.0) and
+           the man-pages project (GPL-2.0); the index's embedded text is treated
+           as a redistribution of the source text (LICENSES.md already says this).
+           Pro: instant retrieval on firstboot, no build step on the user's box.
+           Con: ISO carries CC-BY-SA text -> share-alike + attribution duties;
+           index grows the ISO.
+         BRANCH B — Recipe-only (firstboot build, mirrors arch/so handling):
+           Ship the orchestrator + the staging recipe; build corpus.db on
+           firstboot from /usr/share/man + the rocky-docs RPM (/usr/share/doc)
+           already present on the installed Rocky base. Pro: no CC-BY-SA text in
+           the ISO image itself; symmetrical with the existing RECIPE_ONLY model.
+           Con: firstboot build time (bounded — pilot is ~1 s for 1.6k chunks;
+           full man set is minutes, offline); needs groff at firstboot (present).
+     - man pages (GPL-2.0) noted as bundleable under EITHER branch.
+     - rag/LICENSES.md "Index Bundling Note" reconciled with whichever branch
+       the owner selects; the orchestrator's regenerated manifest matches.
+   Steps:
+     1. Draft 0004 with both branches fully scoped + a recommendation (lean
+        BRANCH B: symmetrical with arch/so, keeps share-alike text out of the
+        image, the Rocky base already ships /usr/share/doc + groff so firstboot
+        build is self-contained and offline — I1-clean).
+     2. PRESENT to owner; record the decision + date in 0004; set status ACCEPTED.
+     3. Execute the mechanical consequence of the chosen branch (a packaging hook
+        note for A; a firstboot-recipe doc for B). NOTE: actual ISO/RPM packaging
+        is downstream (Phase 11 parent plan) — 0004 only RECORDS the posture and
+        the recipe; it does not build the ISO.
+   Validation:
+     - 0004 exists, status ACCEPTED, both branches scoped, decision + date recorded.
+     - rag/LICENSES.md regenerated and consistent with 0004.
+     - 0003 remains UNEDITED (this is a new doc, not a 0003 amendment).
+   Risks / Edge cases:
+     - Owner unavailable -> this phase PAUSES and escalates (it is a gate). The
+       rest of the build (Phases 1-3, 5) does NOT depend on the gate's outcome —
+       the index builds + retrieves regardless; only the SHIP posture is gated.
+     - Per-post attribution (SO) is NOT in scope (SO is recipe-only + out of
+       pilot); 0004 covers only man (GPL-2.0) + Rocky docs (CC-BY-SA-4.0).
+   Subagent orchestration:
+     - Execution shape: [SINGLE]  (but contains a human gate)
+     - REQUIRED subagent_type: general-purpose  (drafts the decision doc; the
+       DECISION itself is the owner's, not the agent's)
+     - REQUIRED model: opus  (license reasoning across two branches + a
+       recommendation the owner relies on; correctness matters, multi-constraint)
+     - Run in background: no (gate; the executor must surface it to the owner)
+     - Brief template:
+       "Execute Phase 4 of <PLAN_FILE_PATH>. Your slice: draft
+        docs/decisions/0004-corpus-license-posture.md scoping BOTH branches
+        (bundle-with-attribution vs recipe-only) per §3 Phase 4, with a
+        recommendation. Touch only docs/decisions/0004-*.md and rag/LICENSES.md
+        (regen). Do NOT edit 0003. This is an OWNER GATE: draft + recommend, then
+        STOP and surface the decision to the owner — do not self-accept.
+        Evidence: the two scoped branches + your recommendation. Print one-line
+        summary and exit."
+
+--------------------------------------------------------------------
+### PHASE 5: Budgets, projection, runbook — GOAL: measure + document, set up follow-on
+--------------------------------------------------------------------
+   Prerequisites: Phase 3 (a measured pilot index exists). Independent of Phase 4.
+   Deliverables:
+     - Measured numbers recorded (in the runbook doc + 0004 appendix): pilot
+       chunk count, per-source split, build time, on-disk size, p50 query
+       latency (mean of ~200 warm queries, mirroring 0003's method).
+     - A full-coverage PROJECTION: extrapolate chunk count + size from the pilot
+       cap to the uncapped man set + full Rocky English docs, against the 0003
+       linear fit (~1159 bytes/chunk; fixed ~40 KiB overhead) — confirm it stays
+       inside the ~3-5 GB SSD budget. Choose + document the production max_* caps
+       (or "uncapped" with the time/size cost stated).
+     - docs/rag-corpus-build.md: the reproducible runbook (stage -> build ->
+       point ERDTREE_CORPUS_INDEX), both posture branches, the .venv requirement,
+       and the DEFERRED-TO-MOSSAD st-embedder swap note.
+     - A short FOLLOW-ON section pointing at the generic-command-tool brainstorm:
+       this index is the grounding corpus for command synthesis AND the mining
+       source for the classifier destructive-command corpus (brainstorm §4/§6).
+   Steps:
+     1. Measure on the pilot index from Phase 2/3 under .venv (latency loop +
+        os.path.getsize + chunk count from meta/corpus).
+     2. Compute the projection from 0003's fit; state the chosen cap + rationale
+        (pilot = capped man + admin Rocky docs; path to fuller coverage = raise
+        max_man_pages / drop the admin allowlist, with the size/time cost shown).
+     3. Write the runbook; cross-link 0003 (frozen contract) + 0004 (posture).
+   Validation:
+     - The runbook contains REAL measured numbers (not placeholders) from this
+       host + a defensible projection inside budget.
+     - p50 query latency recorded (expected low-ms; 21 ms observed on a 1677-chunk
+       hashed index this session — note this is index-open-included, the 0003
+       warm persistent-conn number is sub-ms).
+   Risks / Edge cases:
+     - Latency measured WITH per-query index open (docs tool opens per call) is
+       higher than 0003's persistent-conn number — record both, note the docs
+       tool opens per call by design (stateless, I9-safe). If p50 with open is a
+       concern at scale, a persistent-conn optimization is a documented future
+       item (behind the frozen retrieve boundary), NOT a v0.1 blocker.
+   Subagent orchestration:
+     - Execution shape: [SEQUENTIAL — depends on Phase 3]  (parallel-safe with Phase 4)
+     - REQUIRED subagent_type: general-purpose
+     - REQUIRED model: sonnet  (measurement + a documented projection; light math)
+     - Run in background: no (short; produces the runbook)
+     - Brief template:
+       "Execute Phase 5 of <PLAN_FILE_PATH>. Your slice: measure the pilot index
+        (chunks/size/build-time/p50 latency under .venv), project to full coverage
+        against 0003's fit, and write docs/rag-corpus-build.md (runbook + follow-on
+        pointer to the generic-command-tool brainstorm). Read §3 Phase 5 + 0003.
+        Touch only docs/rag-corpus-build.md (and an 0004 appendix if Phase 4 done).
+        Validation: REAL measured numbers in the doc, projection inside the ~3-5 GB
+        budget. Evidence: paste the measured table. Print one-line summary and exit."
+
+--------------------------------------------------------------------
+### PHASE 6: (FOLLOW-ON — NOT BUILT HERE) Linkage to the generic command tool
+--------------------------------------------------------------------
+   This phase is DELIBERATELY out of scope — it is the next plan, gated on THIS
+   one. Recorded so the executor does NOT attempt it and the linkage is explicit.
+     - The populated corpus.db from this plan is the PREREQUISITE for:
+         (1) Grounding command synthesis: a future generic gated `command` tool
+             (brainstorm §5) calls docs.retrieve to ground a small local model
+             so it emits CORRECT RHEL/dnf/systemd/SELinux commands. The index
+             this plan builds is what makes that grounding real.
+         (2) Classifier audit corpus (brainstorm §4): the Rocky docs in the index
+             enumerate dangerous verbs/shapes (mkfs, dd, lvremove, firewall panic,
+             systemctl mask, SELinux relabels) — mined into a destructive-command
+             test set for the adversarial classify() audit that GATES the command
+             tool build.
+     - Sequence: finish THIS plan -> a new phase-plan over brainstorm steps 1-4
+       (step 1 = the classifier audit as a hard gate before the command tool).
+   Subagent orchestration: N/A (not executed in this plan).
+
+## 4. DATA MODEL CHANGES
+   None to the frozen format. The sqlite-vec .db (meta + chunks + vec_chunks)
+   is unchanged. OPTIONAL additive meta keys (built_at, source_counts, corpus_sha)
+   may be written by the orchestrator — additive, ignored by retrieve.read_meta,
+   recorded in 0004 (NOT 0003). No SQL migration; build_index recreates the file.
+   No RLS / encryption concerns (single-machine local file; no PII; chunk text is
+   public documentation).
+
+## 5. API CONTRACT
+   No HTTP API. The "contract" surfaces are:
+     - rag.build_index_prod.run_build(...) -> BuildReport  (NEW; internal build API)
+     - rag.retrieve.retrieve(query, index_path, k, max_chars) -> list[Chunk]
+       (FROZEN — unchanged; the orchestrator's output is consumed through it)
+     - core/tools/docs.py docs.retrieve op (FROZEN ToolSpec — unchanged; only the
+       index it points at via ERDTREE_CORPUS_INDEX becomes non-empty)
+
+## 6. WORKER / QUEUE CHANGES
+   None. The corpus build is an OFFLINE, one-shot build-time job (dev host now;
+   firstboot on target under BRANCH B). No queue, no scheduler, no daemon. The
+   full st-embedder corpus build is a separate DEFERRED-TO-MOSSAD batch job (D1),
+   off the critical path.
+
+## 7. FRONTEND CHANGES
+   None. Erdtree is terminal-native, no GUI. The only operator-visible surface is
+   the docs.retrieve tool summary ("Retrieved N reference passages.") which is
+   unchanged, and the orchestrator's I2-clean build summary printed at build time.
+
+## 8. TESTING STRATEGY
+   Unit / integration (tests/test_rag_build_index_prod.py, .venv unittest):
+     - Smoke: run_build over capped man + staged Rocky docs -> real .db opens,
+       meta sane, chunk count > 0, per-source split has both man + rocky chunks.
+     - Retrieval-quality (SC2): "how do I open a firewall port" -> top result
+       source contains "firewall", text mentions port/zone. The load-bearing
+       assertion; proven feasible this session.
+     - Episodic-reuse regression (SC6): a second index at a different index_path
+       (synthetic chunks, license="") builds + queries independently.
+     - I2 leakage: orchestrator stdout + chunk source labels vs _FORBIDDEN_AI_TERMS.
+     - I9 degrade: empty ERDTREE_CORPUS_INDEX -> "Retrieved 0 reference passages."
+     - No-regression: the 51 existing rag/docs tests stay green.
+   Manual QA checklist:
+     - Stage sources, run the orchestrator CLI, export ERDTREE_CORPUS_INDEX, call
+       docs.retrieve in a Python shell, confirm a grounded firewalld passage.
+     - DEFERRED-TO-MOSSAD: full uncapped man build + st-embedder build + live
+       latency on an 8 GB card (D1/D2 below).
+
+## 9. ROLLOUT & OBSERVABILITY
+   - No feature flag needed: ERDTREE_CORPUS_INDEX unset -> docs tool degrades OFF
+     (I9). Setting it to the durable corpus.db turns retrieval ON. This IS the flag.
+   - Observability: the orchestrator prints an I2-clean build summary (passage
+     count + size). The optional meta keys (built_at, source_counts) give an
+     operator provenance via a plain `sqlite3 corpus.db "select * from meta"`.
+   - Rollback: delete/unset ERDTREE_CORPUS_INDEX -> instant return to the
+     degraded empty-but-valid state; the core agent loses retrieval but keeps
+     running (I9). The index is a single file; removing it is the rollback.
+
+## 10. OPEN QUESTIONS
+   Q1  (GATE — Phase 4) License posture: bundle-with-attribution vs recipe-only.
+       Owner decision. Recommendation: recipe-only (BRANCH B), symmetrical with
+       arch/so, keeps CC-BY-SA text out of the ISO, self-contained firstboot.
+   Q2  Pilot scope: admin-allowlist Rocky docs (~83 files) vs full English
+       (~475)? Recommendation: admin allowlist for the pilot (tighter, on-point
+       for the sysadmin/Radagon use case); full English is one flag away.
+   Q3  man-page cap for the SHIPPED index: capped vs full /usr/share/man? Trade
+       time/size for coverage; §5 records the chosen cap + projection. Default
+       recommendation: a generous cap on sections 1/5/8 covering core sysadmin
+       binaries; full set is a documented longer (still-offline) build.
+   Q4  Optional provenance meta keys (built_at/source_counts/corpus_sha) — add
+       or skip? Cheap + useful; recommend add (additive, 0003-safe).
+
+## 11. ESTIMATED EFFORT
+   Phase 1 (durable sources)         : S   (file-walk + filter helper)
+   Phase 2 (orchestrator)            : M   (compose frozen APIs; the keystone)
+   Phase 3 (wire + real test)        : M   (real retrieval-quality assertion)
+   Phase 4 (license gate + 0004)     : S   build / + OWNER WAIT (gate)
+   Phase 5 (budgets + runbook)       : S   (measure + document)
+   Phase 6 (follow-on)               : OUT OF SCOPE (next plan)
+   Critical path: Phase 1 -> Phase 2 -> Phase 3 (the build + proof spine).
+   Phases 4 and 5 hang off Phase 3 and can run concurrently; Phase 4 carries an
+   owner gate that does NOT block 1-3-5.
+   Total in-scope build: ~M+ (one good session on the dev host under .venv).
+
+## 12. EXECUTOR ORCHESTRATION GUIDE
+
+### 12.1 Parallelism map
+   Phase | Execution            | Siblings | Depends on | Model  | Subagent type
+   P1    | SINGLE               | —        | none       | sonnet | general-purpose
+   P2    | SEQUENTIAL           | —        | P1         | sonnet | general-purpose
+   P3    | SEQUENTIAL           | —        | P2         | sonnet | general-purpose
+   P4    | SINGLE (owner gate)  | —        | P3         | opus   | general-purpose
+   P5    | SEQUENTIAL           | —        | P3         | sonnet | general-purpose
+   P6    | OUT OF SCOPE         | —        | this plan  | —      | —
+
+   DAG (mostly linear; P4 + P5 fork after P3):
+
+       P1 ──> P2 ──> P3 ──┬──> P4  (owner gate; does NOT block P5)
+                          └──> P5  (measure + runbook)
+
+   P4 and P5 are the only concurrency: both depend only on P3, touch DISJOINT
+   files (P4: docs/decisions/0004 + rag/LICENSES.md; P5: docs/rag-corpus-build.md),
+   so they can run as parallel siblings. P4 contains a human gate; if the owner
+   is absent, P4 pauses while P5 still completes.
+
+### 12.2 Cross-phase work consolidation
+   - The corpus.db built in P2 is REUSED by P3 (tests) and P5 (measurement).
+     Build it ONCE at runtime/rag/corpus.db; P3 + P5 read that artifact rather
+     than each rebuilding. (P3's smoke test builds its OWN tmp index for
+     isolation, but the firewall retrieval-quality + P5 measurement use the
+     shared runtime/rag/corpus.db.)
+   - .venv/bin/python is the interpreter for EVERY phase that touches an index
+     (P2/P3/P5). The executor should export the venv once and pass it in briefs;
+     the #1 footgun is running system python3 (no sqlite_vec -> silent no-index).
+   - rag/LICENSES.md is regenerated by BOTH the orchestrator (P2) and reconciled
+     in P4 — run P4's LICENSES touch AFTER P2/P5 to avoid clobbering; P4 and the
+     orchestrator both call write_license_manifest, so P4 only edits the
+     posture-specific note, not the whole file.
+
+### 12.3 Model-mix budget
+   Target split across the 5 in-scope phases:
+     - fable:  0 phases. Nothing here is frontier-grade — it is composing already-
+       built, tested, frozen functions and writing tests + docs. Opus on P4 is
+       the ceiling.
+     - opus:   1 phase (P4 — two-branch license reasoning + a recommendation the
+       owner acts on). ~20%.
+     - sonnet: 4 phases (P1/P2/P3/P5 — file logic, API composition, tests,
+       measurement). ~80%.
+     - haiku:  0 phases (no phase is a trivial single-field edit; P1 is the
+       lightest but still has filter logic + idempotency to get right).
+   Rough split: 0% fable / 20% opus / 80% sonnet / 0% haiku.
+
+### 12.4 Estimated wall-clock
+   Best case (P4 ‖ P5 after P3, owner immediately available): P1+P2+P3 serial
+   spine (~the bulk) + max(P4,P5) ≈ one focused session.
+   Worst case (strictly serial, owner-gate wait on P4): the spine + sequential
+   P4 (incl. owner round-trip) + P5.
+   Critical path: P1 -> P2 -> P3 (build + prove). P4's owner gate is the only
+   unbounded wait, and it is OFF the index-correctness path (the index works
+   before the posture is decided).
+
+### 12.5 Failure recovery policy
+   - P1 (staging): retry up to 2x with same subagent (deterministic file ops);
+     if source clone is missing, PAUSE + escalate (need the Rocky docs on disk).
+   - P2 (orchestrator): retry up to 2x. If build_index raises "sqlite-vec backend
+     not installed", the executor mis-set the interpreter -> re-dispatch under
+     .venv/bin/python (do NOT treat as a code bug).
+   - P3 (tests): if the firewall retrieval-quality assertion FAILS (not skips),
+     PAUSE + escalate — it signals the hashed embedder under-ranked the Rocky doc
+     for the chosen corpus scope; the fix is corpus scope (Q2/Q3) or the
+     st-embedder swap (D1), an owner-visible quality decision, not a silent retry.
+   - P4 (license gate): PAUSE + escalate to owner by design — never self-accept a
+     posture.
+   - P5 (budgets/runbook): retry up to 2x; non-blocking — if it fails, log a
+     deferred-item and ship the index (the runbook is documentation, not the gate).
+   - Default if unspecified: pause and escalate.
+
+### 12.6 Audit trail location
+   Per-phase evidence: runtime/audits/rag-production-ingest/phase-<id>.md
+   Final rollup:        runtime/audits/rag-production-ingest/FINAL.md
+   (runtime/ is gitignored; the index + sources live there too.)
+
+## 13. DEFERRED ITEMS (environment-blocked or next-plan; NOT design gaps)
+   D1  Production st-embedder (384-d sentence-transformer) corpus build — needs
+       the mossad GPU host + cached weights; the orchestrator is embedder-agnostic
+       (backend="st" path present + guarded), so this is a flag + re-run, not new
+       code. The pilot ships the hashed embedder (quality ceiling acknowledged).
+   D2  Full UNCAPPED man set + full English Rocky docs build + live latency on an
+       8 GB card — measured/projected here (§5) but the full uncapped run + the
+       real-card timing land on a real Rocky/Ollama box (mossad).
+   D3  ISO/RPM packaging of the index OR the firstboot build hook (whichever
+       BRANCH 0004 selects) — a Phase 11 (parent plan) packaging concern; 0004
+       records the posture + recipe, packaging is downstream.
+   D4  The generic gated `command` tool + the classifier adversarial audit
+       (brainstorm §4/§5) — the NEXT plan, gated on this index existing. Phase 6
+       above records the linkage; it is not built here.
+   D5  pytest in the venv — new tests are unittest-style so
+       `.venv/bin/python -m unittest` suffices; if the executor wants pytest it
+       must provision it (matches the parent plan's D5).
+
+=====================================================================
+END OF PLAN
+=====================================================================
