@@ -32,16 +32,46 @@ You land in the tier's NL prompt. Type plain English; `!cmd` runs one bash comma
 | radagon | red          | `qwen2.5:7b` (7B–14B range; pass `14b` for the high end) |
 | radahn  | scarlet      | massive / dedicated-infra — **not** a 14B; not runnable here |
 
+## The playground
+
+You land in a seeded `/root` home full of things to test against — `documents/`,
+a `projects/webapp` with config + code, `logs/` with errors to find, `data/`
+(users.csv, products.json) to search, and a `downloads/` of junk to clean up.
+It's writable (create/edit/delete freely) and resets on exit. Try:
+
+```
+what files are in my home directory
+find the largest files here
+search my logs for errors
+how many users are in the data file
+clean up the downloads folder        # tests the destructive-op gate
+```
+
+## Hardware telemetry (testing)
+
+The host's real hardware is passed through read-only so the agent can see it:
+
+```
+what GPUs are in this machine and how hot are they
+what's the CPU temperature
+how fast are the fans spinning
+```
+
+- **GPUs** — `nvidia-smi` + the NVML library and `/dev/nvidia*` are bind-mounted
+  (no nvidia-container-toolkit needed). Skipped cleanly on a host with no GPU.
+- **Sensors / fans / temps** — `/sys` is mounted read-only and `lm_sensors` reads
+  the host's hwmon. `lspci`, `dmidecode`, and CPU info work too.
+
 ## How it's wired
 
-- **Repo** is mounted **read-only** at `/opt/erdtree`, so a destructive op can't
-  mutate the source. The running tree is always the current checkout.
+- **Repo** is mounted **read-only** at `/opt/erdtree` (on `PYTHONPATH`), so a
+  destructive op can't mutate the source. The running tree is always current.
 - **Inference** uses `--network=host`, so `localhost:11434` inside the container is
   the host's Ollama. The core client's localhost-only assertion (I1) still holds.
 - **Audit log** and any writes land in the container's ephemeral overlay and vanish
   on exit (`--rm`).
-- **Rootless**: container-root maps to your unprivileged host uid; host block
-  devices aren't present (private tmpfs `/dev`).
+- **Rootless**: container-root maps to your unprivileged host uid. Hardware is
+  exposed read-only for telemetry; host disks remain non-writable.
 
 ## Containment verified
 

@@ -87,7 +87,17 @@ A purpose-trained model running natively inside an OS is a new paradigm for huma
 
 ## Status
 
-Early buildout. Core framework and model training pipeline in active development. Not ready for production use.
+Active buildout — the agent loop runs end to end on local models today. Not production-ready.
+
+**Working now:**
+- The full agent loop: English in -> tool call -> permission gate -> execute -> audited -> streamed English out, running on local Qwen (3B/7B/14B) via Ollama.
+- The product shell: a login shell with a natural-language mode and a raw-bash mode you toggle between, live token streaming, inline tool steps, and a dead-man fallback that drops you to bash if the engine is unavailable (you're never stuck).
+- Ten system tools (services, packages, logs, network, firewall, users, disk, processes, hardware, files), a hardened permission gate (reads run free, writes confirm, destructive ops need a typed word), and an append-only audit log.
+- Local document retrieval and an invisible-memory layer (rolling compaction + episodic recall) so sessions never hit a context wall.
+- A throwaway Rocky 9 container sandbox for testing the Marika (3B) and Radagon (7B-14B) tiers, with a seeded playground and real hardware telemetry (GPU / CPU / sensors / fans).
+- ~1,900 tests green.
+
+**Still ahead:** per-tier configuration plumbing, the model fine-tuning pipeline, and the bootable ISO installer.
 
 ---
 

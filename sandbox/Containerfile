@@ -1,30 +1,32 @@
 # Erdtree tier sandbox — a Rocky 9 container that runs the full agent stack in
-# OS isolation so destructive ops (rm/mkfs/userdel/...) hit a disposable overlay,
-# never the host. Inference is delegated to the host's Ollama over the loopback
-# (the container runs with --network=host, so localhost:11434 IS the host's
-# GPU-backed Ollama and the I1 localhost-only assertion still holds).
+# OS isolation, now with a seeded home playground and real hardware telemetry
+# (GPU / CPU / sensors / fans) passed through from the host for testing.
 #
-# The repo is MOUNTED read-only at /opt/erdtree at run time (see run.sh) rather
-# than copied in, so the sandbox always runs the current tree and a destructive
-# op can never mutate the real source.
+# Destructive ops still hit the disposable overlay, not the host (the repo is
+# mounted read-only; host disks aren't writable). Inference is delegated to the
+# host's GPU-backed Ollama over loopback (--network=host).
 FROM quay.io/rockylinux/rockylinux:9
 
-# Real sysadmin binaries so the agent's tools have actual commands to invoke.
-# (This is a non-systemd container, so systemctl/journalctl are limited — that's
-# expected for a sandbox; the permission gate + audit still exercise fully and
-# destructive ops stay contained regardless.)
+# Sysadmin + hardware-inspection binaries so the agent's tools and raw bash have
+# real commands: process/disk/file tools, PCI listing, CPU info, and lm_sensors
+# (reads the host /sys/class/hwmon passed in at run time -> fan/temp/voltage).
 RUN dnf -y install \
         python3.11 python3.11-pip \
         iproute procps-ng util-linux findutils shadow-utils \
         firewalld systemd \
+        lm_sensors pciutils usbutils dmidecode hostname which \
+        tree jq vim-minimal \
     && dnf clean all
 
-# Optional docs/RAG backend. The CORE agent imports NONE of this — it degrades
-# OFF when absent (I9) — but installing it lets the docs tool work if an index
-# is present.
+# Optional docs/RAG backend. The CORE agent imports none of this (degrades OFF).
 RUN python3.11 -m pip install --no-cache-dir sqlite-vec==0.1.9 || true
 
+# Seed playground -> /root (the home you land in). Writable in the overlay, so
+# you can create / edit / delete during testing; it all resets on exit (--rm).
+COPY seed/home/ /root/
+
 ENV ERDTREE_BASE_URL=http://localhost:11434 \
-    PYTHONDONTWRITEBYTECODE=1
-WORKDIR /opt/erdtree
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/opt/erdtree
+WORKDIR /root
 CMD ["/usr/bin/python3.11", "-m", "shell.shell"]

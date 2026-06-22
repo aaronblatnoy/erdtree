@@ -1,0 +1,6 @@
+{
+  "theme": "dark",
+  "telemetry": false,
+  "recent_hosts": ["db.internal", "cache.internal"],
+  "editor": "vim"
+}

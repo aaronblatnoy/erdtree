@@ -1,0 +1,4 @@
+- renew the TLS cert before it expires (July 3)
+- clean up old kernels on the build box
+- ask Priya about the staging DB snapshot
+- write the postmortem for the Tuesday outage
