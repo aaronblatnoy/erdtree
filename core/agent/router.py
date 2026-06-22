@@ -39,6 +39,7 @@ fully unit-testable on any host (including the macOS dev host).
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
@@ -385,14 +386,35 @@ class Router:
         """
         calls = tool_calls or []
 
-        # No tool calls at all: try salvaging a JSON tool call from content
-        # before treating the turn as English.  Some smaller models emit tool
-        # calls as JSON text in the content field rather than via tool_calls[].
+        # No structured tool calls. Small models often emit a tool call as TEXT
+        # in content instead of via tool_calls[] — in several malformed shapes
+        # (qwen's <tool_call> tags, `name {json}`, `name({json})`, bare {json}).
+        # Salvage what we can; anything that LOOKS like a botched tool-call
+        # attempt becomes a MISS (re-ask) so the raw garbage is NEVER rendered
+        # as if it were the answer (0002 §5).
         if not calls:
-            synthetic = _try_parse_content_as_tool_call(content)
-            if synthetic is None:
+            synthetic, looked_like_attempt = _extract_tool_call_from_content(content)
+            if synthetic is not None:
+                calls = [synthetic]
+                # The content WAS the tool-call attempt — it is not an English
+                # answer. Clear it so a downstream MISS (e.g. unknown tool) never
+                # carries the raw attempt forward to be rendered.
+                content = ""
+            elif looked_like_attempt:
+                return RouterResult(
+                    kind=TurnKind.MISS,
+                    misses=[MissDetail(
+                        call_id="",
+                        reason="garbled_tool_call",
+                        reask=reask_invalid_input(
+                            "a tool call must be issued through the tool interface, "
+                            "not written as text"
+                        ),
+                    )],
+                    content="",  # never surface the raw attempt to the user
+                )
+            else:
                 return RouterResult(kind=TurnKind.ENGLISH, content=content)
-            calls = [synthetic]
 
         parsed: list[ParsedCall] = []
         misses: list[MissDetail] = []
@@ -558,31 +580,84 @@ def _clip(text: str, limit: int) -> str:
     return text[:limit] + "…[truncated]"
 
 
-def _try_parse_content_as_tool_call(content: str) -> Optional[dict]:
-    """Salvage a tool call emitted as JSON text in the content field.
+# A tool call written as TEXT (not via tool_calls[]) shows up in a few shapes.
+# These markers say "the model was TRYING to call a tool" even when the payload
+# is malformed — used to route a failed attempt to a re-ask instead of printing
+# it. Deliberately narrow so ordinary prose answers never match.
+_TOOLCALL_TAG = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
+_FUNC_PREFIX = re.compile(r"^\s*[A-Za-z_][\w]*(?:\.[\w]+)*\s*[(\[{]")
+_NAME_THEN_JSON = re.compile(r"^\s*([A-Za-z_][\w]*(?:\.[\w]+)*)\s*\(?\s*(\{.*\})\s*\)?\s*$", re.DOTALL)
 
-    Some smaller models write tool calls as a JSON object in their text output
-    instead of populating tool_calls[].  Detect the pattern and return a dict
-    in the assembled shape ({"id","name","arguments"}) so route() can treat it
-    as a real call.  Returns None if the content does not look like a tool call.
-    """
-    if not content:
-        return None
-    stripped = content.strip()
-    if not stripped.startswith("{"):
-        return None
-    try:
-        obj = json.loads(stripped)
-    except (json.JSONDecodeError, ValueError):
-        return None
-    if not isinstance(obj, dict):
-        return None
-    name = obj.get("name")
+
+def _coerce_call(name: Any, arguments: Any) -> Optional[dict]:
+    """Build an assembled-shape call dict ({id,name,arguments}) or None."""
     if not isinstance(name, str) or not name:
         return None
-    arguments = obj.get("arguments") or obj.get("parameters") or {}
+    # A namespaced name (e.g. "bral.list_files") — keep the last segment; the
+    # router's unknown-tool MISS handles a name that is not a registered tool.
+    name = name.split(".")[-1]
     if isinstance(arguments, dict):
         arguments = json.dumps(arguments, separators=(",", ":"))
     elif not isinstance(arguments, str):
         arguments = "{}"
     return {"id": "", "name": name, "arguments": arguments}
+
+
+def _extract_tool_call_from_content(content: str) -> tuple[Optional[dict], bool]:
+    """Salvage a tool call emitted as TEXT in content.
+
+    Returns ``(call, looked_like_attempt)``:
+      * ``call`` is an assembled-shape dict when one could be extracted, else None.
+      * ``looked_like_attempt`` is True when the content has the markers of a
+        tool-call attempt (so the caller re-asks instead of rendering raw text),
+        even if extraction failed.
+
+    Handles: qwen's ``<tool_call>{...}</tool_call>`` tags, a bare ``{...}`` JSON
+    object with a ``name`` key, ``name {json}`` and ``name({json})`` forms.
+    Conservative: ordinary prose (no braces, no tags) returns ``(None, False)``
+    so genuine English answers are never suppressed.
+    """
+    if not content:
+        return None, False
+    stripped = content.strip()
+
+    # 1) qwen native: <tool_call>{...}</tool_call>. The MARKER alone signals an
+    #    attempt (so a broken tag still re-asks rather than rendering raw).
+    if "<tool_call>" in stripped:
+        tag = _TOOLCALL_TAG.search(stripped)
+        if tag:
+            try:
+                obj = json.loads(tag.group(1))
+                if isinstance(obj, dict):
+                    return _coerce_call(
+                        obj.get("name"),
+                        obj.get("arguments") or obj.get("parameters"),
+                    ), True
+            except (json.JSONDecodeError, ValueError):
+                pass
+        return None, True  # tagged but unparseable -> still a (botched) attempt
+
+    # 2) bare JSON object with a name key: {"name": "...", "arguments": {...}}
+    if stripped.startswith("{"):
+        try:
+            obj = json.loads(stripped)
+        except (json.JSONDecodeError, ValueError):
+            # Looks like JSON (starts with "{") but is broken -> botched attempt.
+            return None, ("name" in stripped or "arguments" in stripped)
+        if isinstance(obj, dict) and isinstance(obj.get("name"), str):
+            return _coerce_call(obj.get("name"),
+                                obj.get("arguments") or obj.get("parameters")), True
+        return None, False  # some other JSON the model emitted as its answer
+
+    # 3) function-call-ish prefix: `name {json}` / `ns.name({json})`
+    if _FUNC_PREFIX.match(stripped):
+        m = _NAME_THEN_JSON.match(stripped)
+        if m:
+            try:
+                args = json.loads(m.group(2))
+                return _coerce_call(m.group(1), args), True
+            except (json.JSONDecodeError, ValueError):
+                return None, True
+        return None, True  # function prefix but couldn't extract -> botched
+
+    return None, False

@@ -159,6 +159,74 @@ def test_router_non_json_brace_text_is_english():
     assert result.kind is TurnKind.ENGLISH
 
 
+def test_garbled_tool_call_is_miss_not_rendered():
+    # The exact failure from the mossad session: the model wrote a hallucinated
+    # tool call as text. It must become a MISS (re-ask), and the raw garbage must
+    # NOT survive as content (which would get printed).
+    router = Router(registry)
+    content = 'bral.list_files {"path": ".", "type": "d", "maxdepth": 3, "lines": 200}'
+    result = router.route(content=content, tool_calls=[])
+    assert result.kind is TurnKind.MISS
+    assert result.content == ""          # never surface the raw attempt
+    assert result.misses                 # a re-ask was produced
+
+
+def test_qwen_tool_call_tags_are_parsed():
+    router = Router(registry)
+    content = '<tool_call>{"name": "files", "arguments": {"operation": "list", "path": "/"}}</tool_call>'
+    result = router.route(content=content, tool_calls=[])
+    assert result.kind is TurnKind.TOOL_CALL
+    assert result.calls[0].tool == "files"
+
+
+def test_name_then_json_with_unknown_tool_is_miss():
+    # `name {json}` with a non-registered tool name -> MISS (re-ask), not English.
+    router = Router(registry)
+    result = router.route(content='list_files {"path": "."}', tool_calls=[])
+    assert result.kind is TurnKind.MISS
+    assert result.content == ""
+
+
+def test_broken_tool_call_tag_is_miss():
+    router = Router(registry)
+    result = router.route(content="<tool_call>{not valid json</tool_call>", tool_calls=[])
+    assert result.kind is TurnKind.MISS
+    assert result.content == ""
+
+
+def test_prose_with_braces_midsentence_stays_english():
+    # A genuine answer that merely mentions JSON-ish text must NOT be suppressed.
+    router = Router(registry)
+    text = "The config sets a key and a value; edit it with vi if needed."
+    result = router.route(content=text, tool_calls=[])
+    assert result.kind is TurnKind.ENGLISH
+    assert result.content == text
+
+
+def test_garbled_calls_every_round_show_clean_fallback(tmp_path, monkeypatch):
+    # The mossad failure end-to-end: the model emits a hallucinated tool call as
+    # text every round. The garbage is never rendered, and after the round cap
+    # the user gets ONE clean line instead of silence.
+    responder = ScriptedResponder([
+        ("bral.list_files {\"path\": \".\"}", []),
+        ("bral.list_files {\"path\": \".\"}", []),
+        ("bral.list_files {\"path\": \".\"}", []),
+        ("bral.list_files {\"path\": \".\"}", []),
+        ("bral.list_files {\"path\": \".\"}", []),
+        ("bral.list_files {\"path\": \".\"}", []),
+    ])
+    io = CapIO()
+    repl, audit = _read_repl(tmp_path, monkeypatch, responder, io, "")
+    outcome = repl.run_turn("give me my file structure")
+    audit.close()
+
+    # No raw "bral.list_files" garbage was ever rendered.
+    assert all("bral" not in r for r in io.rendered)
+    # Exactly the clean fallback line was shown.
+    assert io.rendered == ["Could not turn that into an operation. Try rephrasing it."]
+    assert outcome.misses >= 1
+
+
 # --------------------------------------------------------------------------- #
 # Real read output shown verbatim; the model's re-typing suppressed            #
 # --------------------------------------------------------------------------- #

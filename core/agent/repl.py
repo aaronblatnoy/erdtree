@@ -837,6 +837,18 @@ class Repl:
             # TOOL_CALL: dispatch every (already-validated) call through the gate.
             self._dispatch_calls(verdict.calls, user_input, messages, outcome)
 
+        # Fallback: the turn produced nothing the user could see — no English
+        # answer, no read output, no op ran, no gate prompt. (E.g. the model
+        # only emitted malformed tool-call attempts until the round cap.) Show
+        # one clean, honest line instead of a silent void. I2-clean.
+        if (
+            not outcome.ended_in_english
+            and not outcome.read_output_shown
+            and outcome.tool_calls_made == 0
+            and outcome.refused == 0
+        ):
+            self._safe_render("Could not turn that into an operation. Try rephrasing it.")
+
         # P8: fold THIS turn's new messages into the transcript memory so the
         # NEXT turn's compacted_history() carries them.  Walk the appended slice
         # grouping each assistant message with the role:"tool" results that
