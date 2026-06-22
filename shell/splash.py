@@ -45,6 +45,9 @@ _PALETTE: dict[str, int] = {
     "b": 130, "a": 173, "B": 88,        # auburn / highlight / dark shadow
     # robe (Radagon, maroon)
     "V": 88, "M": 52,                   # maroon / deep shadow
+    # dark robe + steel (Radagon sprite) — charcoal-black gown, silver armor
+    "N": 236,                           # charcoal (gown / robe body)
+    "W": 252, "z": 245, "x": 240,       # steel light / mid / dark
 }
 
 # Transparent keys: terminal background shows through.
@@ -91,39 +94,34 @@ _MARIKA = [
     ".......oooo...oooo....",
 ]
 
-# Radagon — red hair, auburn beard, maroon robe with gold trim. The same
-# little figure (Radagon is Marika), in the red palette.
+# Radagon — scarlet-haired figure in a charcoal robe with a steel armor band,
+# a golden sigil glowing through the shadow of his torso, hammer in hand. A
+# single clean little fighter (the floating embers were trimmed away for a
+# crisp silhouette). Authored from hand-drawn art: red hair H/h/d, steel W/z/x,
+# charcoal robe N, black outline o, gold rune y/c.
 _RADAGON = [
-    ".......ooooooooo.......",
-    ".....oodddddddddoo.....",
-    "....oddddddddddddddo...",
-    "...odddHHdddddHHddddo..",
-    "...oddHhhdddddhhHdddo..",
-    "..oddhhhdddddddhhhddo..",
-    "..odhhdoooooooooddhhdo.",
-    "..odhdoSSSSSSSSSSodhdo.",
-    ".odhhoSLLSSSSSSLLSoddo.",
-    ".odhdoSSSSSSSSSSSSohdo.",
-    ".odhdoSSeeSSSSeeSSohdo.",
-    ".odhdoSSeeSSSSeeSSohdo.",
-    ".odhdoSSSSSkkSSSSSohdo.",
-    ".odhdoSSSkmmmmkSSSohdo.",
-    ".odhdoSSbbbaaabbSSohdo.",
-    ".odhddoSbbbbbbbbSoddho.",
-    "..odhdoBbbbbbbbBodhdo..",
-    "..oddhooBbbbbbBoohhdo..",
-    "...oddhooBBBBBBoohhdo..",
-    "....oddhoooooooohhdo...",
-    ".....oVVVVVVVVVVVVo....",
-    "....oVVGGVVVVVVGGVVo...",
-    "...oVVVGgVVVVVVgGVVVo..",
-    "...oVVVVVVVMMVVVVVVVo..",
-    "..oVVVVVVVVMMVVVVVVVVo.",
-    "..oVMVVVVVVMMVVVVVVMVo.",
-    "..oVMVVVVVVVVVVVVVVMVo.",
-    "..ooVVVVVVVVVVVVVVoo...",
-    "....ooooMMooooMMoooo...",
-    ".......oooo...oooo.....",
+    "....dhhhhhhx......",
+    "...hHHHHHHHHd.....",
+    "..hHHHHHHHHHHh....",
+    ".xHHHHHHHHhHHH....",
+    ".hHHHHHHHHNdhHx...",
+    "xHHHHHHHHHNodhh...",
+    "xhHHHkkkHdNoNdh...",
+    ".hHHkzzkHNooodh...",
+    ".hHHkzzkkxNoodh...",
+    "dHhhkWWWkkxoddhx..",
+    "hHhhkkzzzzNdddhx..",
+    "hhdkNxzzxoyoddhx..",
+    "xdhWzzzzNcycoddx..",
+    "xdxWWWxoooyooNd...",
+    "..zWzzxxoocxoo....",
+    "..zzzzzxNoNxNN....",
+    "....NNxNxNNNxx....",
+    "....xNxxNNNN..xzkk",
+    "....NNxxNNNN..xzkz",
+    "...xNNxxNNNN..xzzx",
+    "...NNzxxNNNNN..xx.",
+    "..xxzWzxxxzxN.....",
 ]
 
 
