@@ -104,6 +104,18 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+def _bool_env(name: str, default: bool) -> bool:
+    """Read a boolean env knob OPAQUELY; never raises (I9).
+
+    Truthy: "1"/"on"/"true"/"yes" (case-insensitive). Empty -> default. Anything
+    else -> False, so a typo can never silently ENABLE a gated feature.
+    """
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "on", "true", "yes")
+
+
 class TierUnavailableError(RuntimeError):
     """Raised when ERDTREE_TIER names a tier that is not available on this host —
     an unbuilt tier (radahn/starscourge) or an unknown value. The config layer
@@ -127,6 +139,21 @@ class AppConfig:
     corpus_index: str = ""           # ERDTREE_CORPUS_INDEX — "" -> docs/episodic off.
     retrieval_k: int = 3             # ERDTREE_RETRIEVAL_K — per-tier recall budget.
     compaction_threshold: int = 0    # ERDTREE_COMPACTION_THRESHOLD — 0 -> no cap.
+    # ERDTREE_UNDERSTANDING selects the understanding strategy. Read OPAQUELY
+    # (I6): the value is a plain string handed to _select_strategy, which is the
+    # ONLY place that interprets it. Unknown/absent -> "native" (today's fast
+    # path, byte-identical default — the keep-stale invariant). Valid values:
+    # "native" | "decomposed" | "fast-then-decompose".
+    understanding: str = "native"
+    # ERDTREE_SLOT_WORKERS caps parallel slot-worker calls (Phase 4). Opaque.
+    slot_workers: int = 4
+    # ERDTREE_VERIFY gates the Phase-6 post-exec verification tier. Read OPAQUELY
+    # (I6) and DEFAULT OFF until it is proven on mossad: the byte-identical native
+    # spine must stay the default (keep-stale). This flag carries the operator's
+    # intent; loop integration is deferred (Phase 8 re-planning builds on verify
+    # outcomes), so enabling it never alters the existing run_turn path here.
+    # Truthy values: "1"/"on"/"true"/"yes"; anything else -> off.
+    verify: bool = False
 
     @classmethod
     def from_env(cls, *, interactive: bool = True) -> "AppConfig":
@@ -152,6 +179,10 @@ class AppConfig:
             corpus_index=os.environ.get("ERDTREE_CORPUS_INDEX", "").strip(),
             retrieval_k=_int_env("ERDTREE_RETRIEVAL_K", 3),
             compaction_threshold=_int_env("ERDTREE_COMPACTION_THRESHOLD", 0),
+            understanding=os.environ.get("ERDTREE_UNDERSTANDING", "native").strip()
+            or "native",
+            slot_workers=_int_env("ERDTREE_SLOT_WORKERS", 4),
+            verify=_bool_env("ERDTREE_VERIFY", False),
         )
 
 
@@ -251,19 +282,71 @@ def build_repl(config: AppConfig) -> Repl:
     memory = _build_memory()
     episodic = _build_episodic(config, audit_path)
 
+    # Understanding strategy selection (Phase 5). Default None -> Repl builds the
+    # NativeToolCallStrategy internally, so the DEFAULT path is byte-identical to
+    # today (keep-stale). A router is shared between the strategy and the Repl so
+    # both classify against the same registry.
+    router, strategy = _select_strategy(config)
+
     return Repl(
         registry=registry,
         responder=responder,
         audit=audit,
         context=context,
         io=io,
+        router=router,
         tier_label=config.tier,
         tier_prompt=config.tier_prompt,
         interactive=config.interactive,
         memory=memory,
         episodic=episodic,
         compaction_threshold=config.compaction_threshold,
+        strategy=strategy,
     )
+
+
+def _select_strategy(config: AppConfig):
+    """Resolve (router, strategy) from the opaque ERDTREE_UNDERSTANDING value.
+
+    Returns
+    -------
+    (router, strategy) where both may be None:
+      * "native" (default / unknown): (None, None) -> Repl builds its own Router
+        and NativeToolCallStrategy — the path is byte-identical to today. This
+        is the keep-stale default until the pipeline passes the mossad latency +
+        convergence gates.
+      * "decomposed": always-on decomposition (for bench/testing) — intent ->
+        slots -> assembler. No native fast path.
+      * "fast-then-decompose": native FIRST, escalate to decomposition ONLY on a
+        MISS / no-valid-calls (the escalation tier — I8: reads/common ops never
+        touch decomposition).
+
+    The value is read OPAQUELY (I6): an unrecognised value degrades to the safe
+    native default rather than raising, so a typo never breaks startup (I9).
+    The DecomposedStrategy uses the injected localhost responder for its intent +
+    slot model calls (I1) — no embedder index is wired in the shipped path.
+    """
+    mode = (config.understanding or "native").strip().lower()
+    if mode not in ("decomposed", "fast-then-decompose"):
+        # "native" and any unknown value -> the untouched default path.
+        return None, None
+
+    from core.agent.router import Router
+    from core.agent.pipeline import (
+        DecomposedStrategy,
+        FastThenDecomposeStrategy,
+        NativeToolCallStrategy,
+    )
+
+    router = Router(registry)
+    decomposed = DecomposedStrategy(registry, max_workers=config.slot_workers)
+
+    if mode == "decomposed":
+        return router, decomposed
+
+    # fast-then-decompose
+    native = NativeToolCallStrategy(router)
+    return router, FastThenDecomposeStrategy(native, decomposed)
 
 
 def _build_context(config: AppConfig) -> TurnContext:

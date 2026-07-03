@@ -1,0 +1,10 @@
+{
+  "id": "intent-svc-stop-011",
+  "domain": "services",
+  "turn_type": "action",
+  "system_context": "distro=Rocky Linux 9; kernel=5.14; sshd.service: active(running); nginx.service: active(running); 8 services running",
+  "user": "please shut down the sshd service on this box",
+  "tools": ["services", "packages", "logs"],
+  "expect": { "tool": "services", "arguments_contains": { "operation": "stop", "unit": "sshd.service" }, "permission_class": "write" },
+  "notes": "LABELED intent+slot case (Phase 5): intent=services.stop, slot unit=sshd.service resolvable closed-world from the snapshot. Lives in the separate labeled set (bench/cases_labeled/) so the frozen default validity denominator is unchanged; scored via the decomposed column."
+}

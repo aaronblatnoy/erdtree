@@ -58,6 +58,7 @@ from core.agent.context import TurnContext
 from core.agent.permissions import ExecContext, Gate, OpClass
 from core.agent.prompt import assemble
 from core.agent.router import ParsedCall, Router, RouterResult, TurnKind
+from core.agent.pipeline import NativeToolCallStrategy, UnderstandingStrategy
 from core.tools import ToolRegistry, ToolResult
 
 
@@ -714,6 +715,7 @@ class Repl:
         memory: Optional[Any] = None,
         episodic: Optional[Any] = None,
         compaction_threshold: int = 0,
+        strategy: Optional[UnderstandingStrategy] = None,
     ) -> None:
         self._registry = registry
         self._responder = responder
@@ -726,6 +728,9 @@ class Repl:
         self._interactive = interactive
         self._exec_ctx = ExecContext(interactive=interactive)
         self._max_rounds = max(1, max_rounds)
+        self._strategy: UnderstandingStrategy = (
+            strategy if strategy is not None else NativeToolCallStrategy(self._router)
+        )
         # P8 invisible memory (all OPTIONAL — absence preserves pre-P8 behavior
         # byte-for-byte, I9).
         #   memory:    a TranscriptMemory. None -> history stays [] (today's
@@ -790,19 +795,26 @@ class Repl:
 
         for _round in range(self._max_rounds):
             outcome.rounds += 1
-            response = self._responder(messages, tools)
-            content = getattr(response, "content", "") or ""
-            raw_calls = list(getattr(response, "tool_calls", []) or [])
-
-            verdict: RouterResult = self._router.route(
-                content=content, tool_calls=raw_calls
+            # THE UnderstandingStrategy seam (owned by P1/P5 — P6/P7/P8 MUST NOT
+            # re-edit this loop). The strategy encapsulates ONE round of
+            # understanding and returns a StrategyResult carrying ParsedCall(s)
+            # ONLY. The escalation policy (fast-then-decompose) is COMPOSED into
+            # the injected strategy (FastThenDecomposeStrategy in the pipeline
+            # package), so this loop body is byte-identical for the default
+            # native path — decomposition never touches the fast path (I8). The
+            # downstream _dispatch_calls -> synthesize_command ->
+            # permissions.classify -> registry.dispatch -> AuditLog spine below
+            # is the SINGLE gate + executor for BOTH strategies (R1).
+            result = self._strategy.propose(
+                user_input, snapshot_text, messages, tools,
+                self._responder, self._router,
             )
 
             # Record the assistant turn into history (OpenAI shape).
-            messages.append(self._assistant_message(content, raw_calls))
+            messages.append(self._assistant_message(result.raw_content, result.raw_calls))
 
-            if verdict.kind is TurnKind.ENGLISH:
-                outcome.final_text = verdict.content
+            if result.english_content and not result.misses and not result.calls:
+                outcome.final_text = result.english_content
                 outcome.ended_in_english = True
                 # Presentation only. A faulting render (e.g. a broken streaming
                 # sink that raised partway and left render() in a bad state)
@@ -816,16 +828,16 @@ class Repl:
                 # re-listing of `ls` is dropped — the user already has the real
                 # output above). Length is the discriminator: synthesis is
                 # short, a data echo is bulky.
-                if outcome.read_output_shown and self._is_data_echo(verdict.content):
+                if outcome.read_output_shown and self._is_data_echo(result.english_content):
                     pass  # the real output above IS the answer
                 else:
-                    self._safe_render(verdict.content)
+                    self._safe_render(result.english_content)
                 break
 
-            if verdict.kind is TurnKind.MISS:
+            if result.misses:
                 outcome.misses += 1
                 # Audit the miss (I4 — every op, including failed parses).
-                for miss in verdict.misses:
+                for miss in result.misses:
                     self._audit.write(
                         tier=self._tier_label,
                         nl_input=user_input,
@@ -836,14 +848,14 @@ class Repl:
                 # Re-ask: feed the verbatim 0002 §5 messages back and loop.
                 # If the model ALSO produced some valid calls, dispatch those.
                 self._dispatch_calls(
-                    verdict.calls, user_input, messages, outcome
+                    result.calls, user_input, messages, outcome
                 )
-                for reask in verdict.reask_messages:
+                for reask in result.reask_messages:
                     messages.append(reask)
                 continue
 
             # TOOL_CALL: dispatch every (already-validated) call through the gate.
-            self._dispatch_calls(verdict.calls, user_input, messages, outcome)
+            self._dispatch_calls(result.calls, user_input, messages, outcome)
 
         # Fallback: the turn produced nothing the user could see — no English
         # answer, no read output, no op ran, no gate prompt. (E.g. the model

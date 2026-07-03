@@ -1,0 +1,10 @@
+{
+  "id": "intent-pkg-info-012",
+  "domain": "packages",
+  "turn_type": "action",
+  "system_context": "distro=Rocky Linux 9; installed: openssl, nginx, postgresql; 512 packages installed",
+  "user": "show me details about the openssl package",
+  "tools": ["services", "packages", "logs"],
+  "expect": { "tool": "packages", "arguments_contains": { "operation": "info", "package": "openssl" }, "permission_class": "read" },
+  "notes": "LABELED intent+slot case (Phase 5): intent=packages.info, slot package=openssl resolvable closed-world from the installed list. A pure READ — decomposition needs no model slot round-trip. Lives in bench/cases_labeled/ so the frozen default denominator is unchanged."
+}

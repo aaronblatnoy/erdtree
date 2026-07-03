@@ -1,0 +1,900 @@
+=====================================================================
+BUILDOUT PHASE PLAN: Decomposed NL->Command Execution Pipeline
+  (intent -> slots -> assemble -> gate -> exec -> verify)
+Generated: 2026-07-01
+Scope: Add an isolated, opt-in "decomposed understanding" strategy that turns a
+       small model's hard one-shot problem into many easy ones, runs as an
+       ESCALATION TIER behind today's single-shot fast path, and CONVERGES on
+       the existing hardened permission gate + registry + audit spine — never a
+       second executor or a second gate.
+Source brainstorm: lifecycle/brainstorms/2026-07-01-nl-to-command-execution-pipeline.md
+=====================================================================
+
+## 0. CONTEXT & GOALS
+
+### Problem statement
+A 3B (Marika) / 7-14B (Radagon) base is unreliable at emitting a complete,
+schema-valid tool call for an arbitrary request in ONE turn. Today the entire
+"understanding" step is a single `responder(messages, tools)` call classified by
+`core/agent/router.py`. When it misses, the loop re-asks the SAME hard question.
+The proposal decomposes understanding into intent classification + narrow
+per-slot extraction + deterministic assembly, then adds deterministic
+verification with op-class-keyed retry.
+
+### The single most important framing (from the brainstorm — read it)
+The spec's execution half is ALREADY BUILT and correct:
+  - `core/tools/__init__.py::run_subprocess` is `subprocess.run(list)`, shell-free.
+  - `core/agent/permissions.py::classify` is the hardened, argv-aware, default-deny
+    gate (READ->ALLOW, WRITE->CONFIRM, DESTRUCTIVE->CONFIRM_TYPED, non-interactive
+    write/destructive->REFUSE).
+  - `core/agent/repl.py::run_turn` is the audit + gate + dispatch spine.
+Therefore we DO NOT hand-roll fork()/dup2()/pipe(). We DO NOT build a second
+executor. The durable value is concentrated in **[1] intent + [2] slots
+(decomposed understanding)** and **[6] deterministic verification**. Everything
+we build must terminate by producing the SAME validated `ParsedCall` /
+synthesized-argv the current path produces, and hand it to the EXISTING
+`synthesize_command -> permissions.classify -> registry.dispatch -> AuditLog`.
+
+### Success criteria (measurable)
+1. On the hard/compound cases in `bench/cases/`, the decomposed strategy raises
+   tool-call validity rate vs. single-shot by a measurable margin (target: close
+   the gap on cases single-shot currently MISSes), WITHOUT regressing any
+   currently-passing easy case.
+2. p50 latency of a COMMON single op ("restart nginx", "is nginx failing")
+   is UNCHANGED vs. today, because decomposition never runs on the fast path
+   (it is an escalation tier). Measured on mossad (Section 9 checkpoints).
+3. Zero new code path can reach `registry.dispatch` without first passing through
+   `permissions.classify` with the same synthesized argv today's path uses.
+   (Enforced by test: Phase 5 + Phase 1 invariance suite.)
+4. Destructive-class ops are NEVER auto-retried by verification (Phase 6 test).
+5. All existing tests (`tests/test_repl.py`, `test_router.py`, `test_permissions.py`,
+   `test_synthesize_command.py`, `test_integration_invariance.py`,
+   `test_invariance_baseline.py`, `test_dispatch.py`) stay green at every phase
+   boundary.
+
+### Non-goals (explicitly out of scope)
+- Replacing `router.py` or the FROZEN 0002 tool-call contract (Option A — rejected).
+- A second execution path / hand-rolled fork+exec bundle (Option B — rejected; R1).
+- Cross-tier model escalation as a universal rung (Marika box likely has no larger
+  weights; on 2x3060 Ti a 3B + 14B do not co-reside — cold-swap cost). Marika's top
+  rung is "ask the human"; Radagon-class hardware may add a larger-model retry.
+- Model state across a long sequence (already honored — model is stateless per call).
+- Full man-page coverage. The man-page track is best-effort + human curation of a
+  top-N list, build-time only, and is NOT on the critical path.
+
+### Assumptions made
+- A1: DEFAULTS/RANGES live in the new assembler (Phase 2), sourced from
+  `ArgSpec.default` (which exists in `core/tools/__init__.py` but is not centrally
+  applied today). This is a USE of the frozen contract, not a change to it.
+- A2: "Confidence" from the OpenAI-compat Ollama endpoint is UNVERIFIED (open
+  question). The plan does NOT assume logprobs. Confidence is synthesized from
+  concrete deterministic signals first (intent match distance, required-slot
+  completeness, assembler validation success), and only optionally from
+  self-consistency sampling. A single-shot MISS is itself the primary escalation
+  trigger and needs no confidence dial.
+- A3: Intent match may be done via the 0003 sqlite-vec index (embedding similarity
+  over schema descriptions — a retrieval, not a generation call) OR a model call.
+  Phase 3 spikes both; the seam is identical either way.
+- A4: The man-page track (Phase 9) can be deferred entirely without blocking
+  Phases 1-8. The curated 13 tools remain the fast path.
+- A5: `synthesize_command(call)` in `repl.py` is the canonical argv renderer and
+  is reused verbatim by the pipeline. The assembler produces `ParsedCall`, NOT a
+  shell string; argv rendering for the gate stays in `synthesize_command`.
+
+=====================================================================
+## 1. ARCHITECTURE OVERVIEW
+=====================================================================
+
+### How this fits (Option C from the brainstorm — CONVERGE on the spine)
+```
+                 user_input
+                     |
+          Repl.run_turn (core/agent/repl.py)   <-- ONE integration seam
+                     |
+          +----------+-----------------------------+
+          |   UnderstandingStrategy.propose(...)   |   (NEW protocol, Phase 1)
+          +----------+-----------------------------+
+          |                                        |
+   [default] NativeToolCallStrategy       [opt-in] DecomposedStrategy
+     - responder(messages, tools)           core/agent/pipeline/  (NEW, Phases 2-4)
+     - Router.route()                          [1] intent classifier
+     - byte-identical to today                 [2] parallel slot extraction
+          |                                     [3] deterministic assembler
+          |                                          -> emits ParsedCall(s)
+          +--------------------+--------------------+
+                               |
+                     list[ParsedCall]  (SAME shape both strategies)
+                               |
+        ===== UNCHANGED HARDENED SPINE (repl._dispatch_calls) =====
+          synthesize_command(call)   (repl.py, reused verbatim)
+                -> permissions.classify(argv, ExecContext)   [THE ONLY GATE]
+                -> _resolve_gate (ALLOW / CONFIRM / CONFIRM_TYPED / REFUSE)
+                -> registry.dispatch(tool, op, args)          [subprocess.run(list)]
+                -> AuditLog.write (I4, every op incl. refusals + misses)
+                               |
+        [6] verification (Phase 6): a READ op via the SAME spine, compared to
+            intended state; bounded retry keyed on OpClass; destructive -> escalate
+                               |
+                     English answer terminates the turn
+```
+
+### Affected services
+- core/agent  : NEW pipeline package; ONE seam added to repl.py; 0004 decision doc.
+- core/tools  : UNCHANGED contract. Man-page track (Phase 9) REGISTERS generated
+                tools in the frozen ToolSpec/OpSpec/ArgSpec shape; no schema change.
+- bench       : extended with a labeled intent+slot set + compound cases.
+- distro/models: no change for Phases 1-8. Man-page schema artifact is a build-time
+                 checked-in file (Phase 9); the shipped box never parses troff.
+
+### Invariants this plan must preserve
+- I1 No egress: every extra inference call is localhost Ollama via the injected
+  responder. N slot calls = N x LOCAL compute, never new egress.
+- I2 No AI/LLM/model/agent language in any user-facing string (plan/confirm/verify
+  surfaces speak plain Linux — they already do).
+- I3 The gate is `permissions.classify`, resolved BEFORE every write/destructive.
+  The pipeline NEVER re-implements, weakens, or bypasses it (R1 — the #1 risk).
+- I4 Every attempted op (incl. verification reads, fallback attempts, misses) writes
+  exactly one append-only JSONL audit record.
+- I5 Fresh context injected every turn; context invalidated after a successful
+  mutation (verification reads must see post-mutation reality).
+- I6 No tier/product names in the framework; TierConfig is injected.
+- I7 Marika (3B) and Radagon (7-14B) share one architecture; the difference is
+  model size + slot-worker depth + escalation ladder, not structure.
+- I8 Reads feel instant (ALLOW, no friction) — decomposition must not touch the
+  fast path.
+
+=====================================================================
+## 2. AFFECTED SURFACE AREA
+=====================================================================
+
+### Files to CREATE
+- core/agent/pipeline/__init__.py            (package; exports strategy + types)
+- core/agent/pipeline/strategy.py            (UnderstandingStrategy protocol +
+                                               NativeToolCallStrategy default +
+                                               DecomposedStrategy)
+- core/agent/pipeline/intent.py              (intent classifier: schema select /
+                                               no-confident-match; embedding or model)
+- core/agent/pipeline/slots.py               (deterministic-first slot extraction +
+                                               parallel model slot-workers)
+- core/agent/pipeline/assembler.py           (defaults/ranges/required-slot check ->
+                                               validated ParsedCall; NEVER a shell str)
+- core/agent/pipeline/verify.py              (op-class-keyed post-check + bounded retry)
+- core/agent/pipeline/fallback.py            (demoted, marked, gated free-text path)
+- core/agent/pipeline/plan.py                (compound static plan + dynamic re-plan)
+- docs/decisions/0004-understanding-strategy.md  (situates this beside FROZEN 0002)
+- tools/manpage/parse.py                      (Phase 9, build-time troff/mandoc parser)
+- tools/manpage/generate_schemas.py           (Phase 9, emits OpSpec/ArgSpec artifact)
+- models/schemas/manpages.vN.json             (Phase 9, checked-in versioned artifact)
+- tests/test_pipeline_strategy.py, test_pipeline_intent.py, test_pipeline_slots.py,
+  test_pipeline_assembler.py, test_pipeline_verify.py, test_pipeline_fallback.py,
+  test_pipeline_plan.py, test_pipeline_convergence.py, test_manpage_parser.py
+- bench/cases/*.json  (new labeled intent+slot + compound cases)
+
+### Files to MODIFY
+- core/agent/repl.py    : add the UnderstandingStrategy seam in run_turn + a
+                          `strategy`/`fast_path_then_decompose` ctor param. The
+                          existing native path becomes NativeToolCallStrategy,
+                          byte-identical by default. FLAG: touches the spine —
+                          extra care, refractor-pair.
+- core/agent/main.py    : wire strategy selection from env (opt-in; default off).
+- bench/run_bench.py    : optional flag to score the decomposed strategy + a
+                          latency-capture mode.
+- core/agent/prompt.py  : (Phase 4 only, if slot-workers need a narrow-question
+                          prompt builder) additive helper; no change to existing.
+
+### Migrations required
+None (no DB). The man-page schema artifact is a versioned FILE (Phase 9),
+version-pinned to package NEVRA / `--version`; drift -> tool marked "unverified".
+
+### New env vars / config
+- ERDTREE_UNDERSTANDING = native | decomposed | fast-then-decompose (default: native)
+- ERDTREE_SLOT_WORKERS  = max parallel slot-worker calls (default: tier-appropriate)
+- ERDTREE_VERIFY        = on | off (default: off until Phase 6 proven on mossad)
+- ERDTREE_RETRY_MAX     = bounded retry cap for idempotent classes (default: 2)
+(All read as opaque in main.py — I6.)
+
+### New dependencies
+None required for Phases 1-8 (reuse 0003 sqlite-vec if Phase 3 chooses embeddings).
+Phase 9 may add a mandoc/troff helper as a BUILD-TIME-ONLY dep (never shipped).
+
+=====================================================================
+## 3. PHASES
+=====================================================================
+
+---------------------------------------------------------------------
+### PHASE 0: Measure & Decide — the go/no-go gate
+---------------------------------------------------------------------
+Prerequisites: none.
+Deliverables:
+  - A measurement note (runtime/audits/nl-pipeline/phase-0-measurements.md) with:
+      * single-shot p50/p95 latency of ONE tool-call turn on mossad, per operational
+        tier model (Marika 3B, Radagon 7-14B).
+      * whether Ollama on the 2x3060 Ti actually decodes slot workers CONCURRENTLY
+        or serializes them (vary OLLAMA_NUM_PARALLEL; time K parallel narrow calls
+        vs K serial).
+      * whether the OpenAI-compat endpoint exposes any usable confidence/logprob.
+  - docs/decisions/0004-understanding-strategy.md (draft): records Option C, the
+    escalation-tier posture, and the coexistence with FROZEN 0002.
+Steps:
+  1. On mossad (`ssh mossad "..."`; CLAUDE.md: no interactive SSH), run a small
+     harness that issues N=20 identical tool-call turns per tier model and records
+     wall-clock. Reuse `bench/run_bench.py::ollama_responder`.
+  2. Measure K=3 and K=5 narrow slot-style calls in parallel (threads) vs serial;
+     record the speedup ratio at OLLAMA_NUM_PARALLEL in {1,2,4}.
+  3. Probe the endpoint for logprobs; record present/absent.
+  4. Write 0004 with the numbers and the decision.
+Validation:
+  - Measurement note exists with concrete numbers (not estimates).
+  - GO criterion: parallel slot workers achieve >1.3x speedup over serial at some
+    NUM_PARALLEL AND single-shot p50 is known (so the escalation budget is real).
+  - NO-GO / adjust: if slot workers strictly serialize with no speedup, Phase 4
+    MUST prefer deterministic slot extraction and cap model slot-workers hard
+    (still viable — decomposition's reliability win survives even serial, just at
+    higher latency, which is why it is an escalation tier, not the default).
+Risks / Edge cases:
+  - Mossad's third GPU is "pending" (CLAUDE.md) — measure on the 2-GPU reality only.
+  - macOS dev host has no Ollama — this phase is mossad-only (main.py notes this).
+Subagent orchestration:
+  - Execution shape: [SINGLE]
+  - REQUIRED subagent_type: general-purpose
+  - REQUIRED model: sonnet
+  - Run in background: yes (mossad round-trips + 0004 authoring > 2 min)
+  - Brief template:
+      "Execute Phase 0 of lifecycle/pending/plans/nl-pipeline-buildout.txt. Your
+       slice: measure single-shot p50 + slot-worker concurrency + logprob presence
+       on mossad, then draft docs/decisions/0004-understanding-strategy.md. Read
+       Section 0 + Phase 0. Touch only runtime/audits/nl-pipeline/ and
+       docs/decisions/0004-understanding-strategy.md. Use `ssh mossad "..."` per
+       CLAUDE.md (no interactive SSH). Validation: measurement note has concrete
+       numbers + a GO/NO-GO verdict. Evidence: the note + the 0004 draft. Print a
+       one-line summary and exit."
+
+---------------------------------------------------------------------
+### PHASE 1: The UnderstandingStrategy seam in run_turn (no behavior change)
+---------------------------------------------------------------------
+Prerequisites: Phase 0 GO.
+Deliverables:
+  - core/agent/pipeline/__init__.py, core/agent/pipeline/strategy.py with:
+      * `UnderstandingStrategy` Protocol: `propose(user_input, snapshot_text,
+        messages, tools, responder, router) -> StrategyResult` where StrategyResult
+        carries `calls: list[ParsedCall]`, `misses`, `english_content`, and a
+        `source` tag ("native" | "decomposed" | "fallback").
+      * `NativeToolCallStrategy` — extracts TODAY's exact logic from run_turn
+        (responder call -> Router.route) with ZERO behavior change.
+  - repl.py refactored so run_turn calls `self._strategy.propose(...)` and keeps
+    the identical downstream `_dispatch_calls` / gate / audit path.
+Steps:
+  1. Introduce StrategyResult + Protocol in strategy.py.
+  2. Move the per-round `responder(...)` + `router.route(...)` block from run_turn
+     into NativeToolCallStrategy.propose, returning StrategyResult. Preserve MISS,
+     ENGLISH, and TOOL_CALL handling semantics EXACTLY (including the re-ask feed
+     and the multi-round loop — the strategy handles ONE round; run_turn keeps the
+     loop).
+  3. Add `strategy: Optional[UnderstandingStrategy] = None` to Repl.__init__,
+     defaulting to NativeToolCallStrategy(router) — so absence == today's behavior.
+  4. Do NOT touch permissions.py, synthesize_command, _dispatch_calls, or audit.
+Validation:
+  - `pytest tests/test_repl.py tests/test_router.py tests/test_integration_invariance.py
+    tests/test_invariance_baseline.py tests/test_synthesize_command.py` all green,
+    UNCHANGED (no test edits beyond additive).
+  - New test_pipeline_strategy.py: NativeToolCallStrategy on a scripted responder
+    yields the same ParsedCalls as calling Router.route directly.
+Risks / Edge cases:
+  - This edits the load-bearing spine (repl.run_turn). A subtle change to MISS/ENGLISH
+    ordering or the memory-record slice (`new_msgs_start`) would silently break P8
+    memory. Mitigation: refactor is a pure MOVE; assert message-append order is
+    identical; refractor-pair with the invariance suite as the CHECKER gate.
+Subagent orchestration:
+  - Execution shape: [SEQUENTIAL — depends on Phase 0]
+  - REQUIRED subagent_type: refractor-pair
+      (Rationale: a spine refactor with a hard cross-ref gate — MAPPER finds every
+       run_turn dependency incl. the memory slice + tool_result ordering; CHECKER
+       re-runs the full invariance suite. Inline-personation forbidden.)
+  - REQUIRED model: opus (spine refactor, multi-file reasoning, back-compat critical)
+  - Run in background: no (Phases 2-4 gate on this seam existing)
+  - Brief template:
+      "Execute Phase 1 of lifecycle/pending/plans/nl-pipeline-buildout.txt. Your
+       slice: extract today's responder+Router.route logic in
+       core/agent/repl.py::run_turn into a NativeToolCallStrategy behind a new
+       UnderstandingStrategy protocol (core/agent/pipeline/strategy.py), with ZERO
+       behavior change and NO edits to permissions.py / synthesize_command / audit.
+       Read Section 1 + Phase 1. Touch only core/agent/pipeline/ and
+       core/agent/repl.py (+ additive tests). Validation: full existing test suite
+       green, message-append + memory-slice order byte-identical. Evidence: passing
+       pytest output for the invariance + repl + router suites. Print one-line
+       summary and exit."
+
+---------------------------------------------------------------------
+### PHASE 2: Deterministic assembler + validated-bundle contract
+---------------------------------------------------------------------
+Prerequisites: Phase 1.
+Deliverables:
+  - core/agent/pipeline/assembler.py:
+      * `assemble(tool, operation, slot_values, registry) -> AssembleResult` where
+        AssembleResult is either a validated `ParsedCall` (the frozen router shape:
+        call_id, tool, operation, args, permission_class) OR a structured
+        `Unresolved(missing=[...], reason=...)`.
+      * Applies ArgSpec.default for absent non-required args (A1); validates types
+        via the SAME predicate `core/tools/__init__.py::_validate_args` +
+        `router.validate_arguments`; checks required slots; NEVER emits a shell str.
+      * Range/enum checks: operation must be in spec.ops; args typed; (optional)
+        min/max only if added to ArgSpec later — do NOT change ArgSpec now.
+Steps:
+  1. Implement assemble() reusing router.validate_arguments so the assembler and the
+     native path produce IDENTICAL validation verdicts.
+  2. Set permission_class via spec.permission_class_for(operation) (same as Router).
+  3. Return Unresolved with the precise missing-slot names for the slot layer to fill
+     or for escalation.
+  4. Unit-test that an assembled ParsedCall, fed to synthesize_command +
+     permissions.classify, yields the SAME gate as the native path for the same
+     (tool, op, args). (This is the convergence proof, at the unit level.)
+Validation:
+  - test_pipeline_assembler.py: for every core tool op, a fully-slotted assemble()
+    equals the native ParsedCall; a missing required slot returns Unresolved; a
+    default is applied where ArgSpec.default is set.
+  - Convergence unit check passes for a destructive op (e.g. disk.format ->
+    `mkfs.ext4 /dev/sdb` -> DESTRUCTIVE -> CONFIRM_TYPED), proving the assembler
+    does not under-state blast radius.
+Risks / Edge cases:
+  - Assembler drifting from router validation. Mitigation: it CALLS
+    router.validate_arguments — one validator, not two.
+  - Defaults changing gate class (e.g. defaulting `recursive=True`). Mitigation:
+    only apply ArgSpec.default; audit each default in the test.
+Subagent orchestration:
+  - Execution shape: [SEQUENTIAL — depends on Phase 1]
+  - REQUIRED subagent_type: general-purpose
+  - REQUIRED model: sonnet
+  - Run in background: no (Phase 3/4 consume AssembleResult; Phase 5 gates on it)
+  - Brief template:
+      "Execute Phase 2 of lifecycle/pending/plans/nl-pipeline-buildout.txt. Your
+       slice: build core/agent/pipeline/assembler.py that turns (tool, op,
+       slot_values) into a validated ParsedCall (frozen router shape) or a
+       structured Unresolved, reusing router.validate_arguments +
+       spec.permission_class_for — NEVER a shell string. Read Section 1 + Phase 2 +
+       Assumption A1/A5. Touch only core/agent/pipeline/assembler.py + its test.
+       Validation: assembled ParsedCall == native ParsedCall through
+       synthesize_command+classify for every core op, incl. a destructive op.
+       Evidence: passing test_pipeline_assembler.py. Print one-line summary, exit."
+
+---------------------------------------------------------------------
+### PHASE 3: Intent classifier (schema select | no-confident-match)
+---------------------------------------------------------------------
+Prerequisites: Phase 2.
+Deliverables:
+  - core/agent/pipeline/intent.py:
+      * `classify_intent(user_input, snapshot_text, registry, *, embedder=None,
+        responder=None) -> IntentResult` returning a ranked (tool, operation)
+        candidate with a coarse confidence, or `NoConfidentMatch`.
+      * Two backends behind ONE interface (A3): (a) embedding similarity over
+        OpSpec/ToolSpec descriptions via the 0003 sqlite-vec index (retrieval, no
+        generation round-trip); (b) a narrow model call. Chosen per Phase-0 findings.
+Steps:
+  1. Build the candidate space from registry op descriptions (tool.description +
+     op.description). For the embedding backend, index these via 0003.
+  2. Implement a coarse confidence: match distance + margin to the runner-up.
+  3. Emit NoConfidentMatch below a tunable threshold (tuned on bench in Phase 5).
+  4. Keep it deterministic and dev-host testable (embedder/responder injected;
+     tests use a stub embedder).
+Validation:
+  - test_pipeline_intent.py: labeled inputs map to the right (tool, op); ambiguous
+    inputs return NoConfidentMatch; runs on a stub embedder with no network.
+Risks / Edge cases:
+  - Uncalibrated confidence (R6). Mitigation: threshold tuned on bench (Phase 5);
+    treat as coarse signal; NoConfidentMatch simply routes to fallback/human.
+  - Two ops with near-identical descriptions. Mitigation: return top-K candidates;
+    the assembler's required-slot fit disambiguates.
+Subagent orchestration:
+  - Execution shape: [PARALLEL FANOUT OK — 2 siblings with Phase 4]
+      (Phase 3 and Phase 4 are disjoint files — intent.py vs slots.py — and both
+       depend only on Phase 2. Build concurrently; join at Phase 5.)
+  - REQUIRED subagent_type: general-purpose
+  - REQUIRED model: sonnet
+  - Run in background: yes (independent of Phase 4; harvested at Phase 5)
+  - Brief template:
+      "Execute Phase 3 of lifecycle/pending/plans/nl-pipeline-buildout.txt. Your
+       slice: build core/agent/pipeline/intent.py — classify_intent(...) returning a
+       ranked (tool, operation) candidate or NoConfidentMatch, behind an injected
+       embedder-or-responder interface (Assumption A3). Read Section 1 + Phase 3.
+       Touch only core/agent/pipeline/intent.py + its test. Do NOT edit repl.py or
+       the gate. Validation: labeled inputs classify correctly; ambiguous ->
+       NoConfidentMatch; test uses a stub embedder (no network). Evidence: passing
+       test_pipeline_intent.py. Print one-line summary and exit."
+
+---------------------------------------------------------------------
+### PHASE 4: Slot extraction — deterministic-first, parallel model workers
+---------------------------------------------------------------------
+Prerequisites: Phase 2 (uses Unresolved.missing to know what to extract).
+Deliverables:
+  - core/agent/pipeline/slots.py:
+      * `extract_slots(user_input, snapshot_text, tool, operation, needed_slots,
+        registry, *, responder=None, max_workers=N) -> dict[str, Any]`.
+      * DETERMINISTIC FIRST: resolve unit/package/path/port/interface/device slots
+        via narrow regex + lookup against the injected system context
+        (core/context snapshot). Only genuinely fuzzy slots go to a model worker.
+      * Each model worker sees ORIGINAL sentence + ONE narrow question -> one value
+        or null. Workers run in parallel (thread pool), capped by max_workers and
+        Phase-0 concurrency findings.
+Steps:
+  1. Build a deterministic resolver keyed on ArgSpec name + type + the snapshot
+     (e.g. known unit names from `systemctl` context; block devices from lsblk facts).
+  2. For remaining slots, dispatch one narrow model call per slot via the injected
+     responder; collect (value|null). Null slots stay Unresolved -> assembler decides.
+  3. Respect I1 (localhost responder), I6 (no tier names), and the max_workers cap.
+Validation:
+  - test_pipeline_slots.py: deterministic slots resolve with NO model call (assert
+    responder not invoked); fuzzy slots invoke exactly one worker each; parallel
+    dispatch returns a merged dict; a null slot is reported unresolved.
+Risks / Edge cases:
+  - Serial-only Ollama (Phase-0 NO-GO branch) -> workers serialize; cap tightly and
+    lean on deterministic extraction (R4).
+  - A regex over-matching a path/device -> wrong slot. Mitigation: deterministic
+    resolver only accepts values PRESENT in the injected context (closed-world),
+    else defers to a worker.
+Subagent orchestration:
+  - Execution shape: [PARALLEL FANOUT OK — 2 siblings with Phase 3]
+  - REQUIRED subagent_type: general-purpose
+  - REQUIRED model: sonnet
+  - Run in background: yes (independent of Phase 3; harvested at Phase 5)
+  - Brief template:
+      "Execute Phase 4 of lifecycle/pending/plans/nl-pipeline-buildout.txt. Your
+       slice: build core/agent/pipeline/slots.py — deterministic-first slot
+       extraction (regex + injected system-context lookup) with parallel model
+       slot-workers ONLY for fuzzy slots, one narrow question each, capped by
+       max_workers. Read Section 1 + Phase 4 + Phase-0 concurrency findings. Touch
+       only core/agent/pipeline/slots.py + its test. Validation: deterministic slots
+       resolve with zero model calls; fuzzy slots = one worker each; null ->
+       unresolved. Evidence: passing test_pipeline_slots.py. Print one-line
+       summary and exit."
+
+---------------------------------------------------------------------
+### PHASE 5: DecomposedStrategy wired as an ESCALATION TIER + bench + latency
+---------------------------------------------------------------------
+Prerequisites: Phases 2, 3, 4 (join point).  HIGHEST-RISK design phase (R1).
+Deliverables:
+  - DecomposedStrategy in strategy.py chaining intent -> slots -> assembler ->
+    list[ParsedCall], returning the SAME StrategyResult shape as the native path.
+  - run_turn escalation policy (main.py + repl wiring): try
+    NativeToolCallStrategy FIRST (fast path, today's latency); fall into
+    DecomposedStrategy ONLY on a MISS, NoConfidentMatch, or a detected compound
+    (Phase 8 hook). ERDTREE_UNDERSTANDING selects native | decomposed |
+    fast-then-decompose.
+  - bench/run_bench.py: a mode to score the decomposed strategy on the labeled set.
+  - Latency checkpoint on mossad (Section 9).
+Steps:
+  1. Compose the strategy; its output list[ParsedCall] flows into the UNCHANGED
+     `_dispatch_calls` -> synthesize_command -> classify -> dispatch -> audit.
+  2. Implement fast-then-decompose in run_turn: if the native round is a MISS (and
+     no valid calls) OR intent is NoConfidentMatch, run the decomposed round before
+     re-asking. Preserve the max_rounds cap and the audit-every-op rule.
+  3. Extend bench with labeled intent+slot cases; add a scoring column for decomposed.
+  4. On mossad, measure p50 of a COMMON op under fast-then-decompose (must equal
+     native, since decomposition never fires) AND p50 of a hard/compound op under
+     decomposition (record the escalation cost).
+Validation:
+  - test_pipeline_convergence.py (THE gate-safety test): assert that EVERY call
+    produced by DecomposedStrategy reaches registry.dispatch ONLY via
+    permissions.classify with the same synthesized argv the native path uses;
+    inject a destructive intent and prove it hits CONFIRM_TYPED / REFUSE identically.
+  - bench: decomposed strategy raises validity on previously-MISSed cases with no
+    regression on passing cases.
+  - mossad latency note: common-op p50 unchanged; hard-op escalation cost recorded.
+Risks / Edge cases:
+  - R1 (a second path bypassing classify) — the whole point of Option C. Mitigation:
+    DecomposedStrategy returns ParsedCall ONLY; it has NO dispatch/exec code; the
+    convergence test fails the phase if any bypass exists.
+  - Latency regression on the common path (R4/I6). Mitigation: escalation-tier
+    posture + the mossad checkpoint gates "make it default".
+Subagent orchestration:
+  - Execution shape: [SEQUENTIAL — depends on Phases 2,3,4] then a verification
+    sub-step [SINGLE].
+  - REQUIRED subagent_type: general-purpose for the wiring; THEN
+    consensus-verification-duo for the gate-convergence + no-bypass audit.
+      (Rationale: convergence on the single hardened gate is the highest-stakes,
+       hardest-to-reverse property in the whole plan; adversarial dual review is
+       warranted. Inline-personation forbidden — one context playing both halves
+       collapses the dialectic.)
+  - REQUIRED model: opus (both the wiring and the verification duo)
+  - Run in background: no (gates Phases 6-8) except the mossad latency capture (yes)
+  - Brief template (wiring):
+      "Execute Phase 5 (wiring) of lifecycle/pending/plans/nl-pipeline-buildout.txt.
+       Your slice: compose DecomposedStrategy (intent->slots->assembler->
+       list[ParsedCall]) and add fast-then-decompose escalation to run_turn +
+       main.py env selection, feeding the UNCHANGED _dispatch_calls spine. Read
+       Section 1 + Phase 5. Touch core/agent/pipeline/strategy.py, core/agent/repl.py
+       (seam only), core/agent/main.py, bench/run_bench.py. Do NOT edit
+       permissions.py or synthesize_command. Validation: decomposed calls reach
+       dispatch ONLY via classify; bench validity up, no regressions. Evidence:
+       passing test_pipeline_convergence.py + bench delta. Print one-line, exit."
+  - Brief template (verification duo):
+      "Verify Phase 5 of nl-pipeline-buildout.txt to high confidence: prove NO code
+       path added by the pipeline can reach registry.dispatch without
+       permissions.classify on the same synthesized argv, and that a destructive
+       decomposed intent gates identically to the native path. Two independent
+       reviewers, cross-examine, converge or report the split honestly."
+
+---------------------------------------------------------------------
+### PHASE 6: Deterministic verification + op-class-keyed bounded retry
+---------------------------------------------------------------------
+Prerequisites: Phase 5.
+Deliverables:
+  - core/agent/pipeline/verify.py:
+      * `verify(call, result, registry, exec_ctx, audit) -> VerifyOutcome` that runs
+        the tool's OWN READ op (via the SAME spine: classify(ALLOW) -> dispatch ->
+        audit) and compares to intended state.
+      * Retry policy keyed on OpClass (from the brainstorm table):
+        services/packages/files/firewall/users -> idempotent, auto-retry up to
+        ERDTREE_RETRY_MAX; network -> partial; disk format/partition/dd/wipe and any
+        DESTRUCTIVE -> NEVER auto-retry, ESCALATE to a human with a concrete error.
+Steps:
+  1. Map each core tool's write op to its verifying read (systemctl is-active,
+     rpm -q, stat/test -e, firewall-cmd --query-service, id <user>, ip addr show).
+  2. Run the read through classify (it lands ALLOW) + dispatch + audit (I4). Compare.
+  3. On failure: if op_class is idempotent -> retry the write (bounded); else ->
+     escalate (no retry). Invalidate context between attempts (I5).
+  4. Gate the whole feature behind ERDTREE_VERIFY (default off until mossad-proven).
+Validation:
+  - test_pipeline_verify.py: an idempotent failing write retries up to the cap and
+    stops; a DESTRUCTIVE failing op NEVER retries and returns an escalation outcome;
+    every verification read writes an audit record.
+Risks / Edge cases:
+  - R3: auto-retrying `mkfs`/`dd`/`userdel` is catastrophic. Mitigation: retry keyed
+    on op class; destructive path has NO retry branch (assert in test).
+  - A verifying read that itself mutates (must not exist). Mitigation: only use ops
+    declared READ in the registry; the classifier confirms ALLOW.
+Subagent orchestration:
+  - Execution shape: [SEQUENTIAL — depends on Phase 5]
+  - REQUIRED subagent_type: general-purpose
+  - REQUIRED model: opus (safety-critical retry taxonomy; a mis-keyed class is a
+    catastrophic auto-retry — worth the stronger model)
+  - Run in background: no (Phase 8 re-planning builds on verify outcomes)
+  - Brief template:
+      "Execute Phase 6 of lifecycle/pending/plans/nl-pipeline-buildout.txt. Your
+       slice: core/agent/pipeline/verify.py — post-exec verification via each tool's
+       own READ op through the SAME classify->dispatch->audit spine, with bounded
+       retry KEYED ON OpClass (idempotent auto-retry; destructive NEVER retries,
+       escalates). Read Phase 6 + the brainstorm verification table. Touch only
+       core/agent/pipeline/verify.py + its test (+ ERDTREE_VERIFY wiring in main.py).
+       Validation: destructive never retries; idempotent retries to the cap; every
+       verify read is audited. Evidence: passing test_pipeline_verify.py. Print
+       one-line summary and exit."
+
+---------------------------------------------------------------------
+### PHASE 7: Free-text fallback — demoted, marked, gated, audited distinctly
+---------------------------------------------------------------------
+Prerequisites: Phase 5 (fires only when intent/slots/assembler cannot resolve).
+Deliverables:
+  - core/agent/pipeline/fallback.py: a LAST-RESORT path that proposes an argv from
+    free-text generation, then routes that argv through the UNCHANGED
+    permissions.classify + gate, renders it VISUALLY MARKED as "unverified /
+    best-effort", audits it with a DISTINCT flag, and NEVER auto-runs it.
+Steps:
+  1. Generate a candidate argv (single narrow request). Pass it verbatim to
+     permissions.classify (NOT a new gate).
+  2. Render with an I2-clean "unverified" marker in the confirmation surface.
+  3. Audit with a distinct `source=fallback` field so fallback usage is queryable.
+  4. Require confirmation for EVERYTHING from fallback (even reads get a visible
+     "best-effort" note); never ALLOW-auto a fallback op silently.
+Validation:
+  - test_pipeline_fallback.py: a fallback argv still hits classify; a destructive
+    fallback argv -> CONFIRM_TYPED/REFUSE; the audit record carries source=fallback;
+    nothing from fallback auto-runs without the marked confirmation.
+Risks / Edge cases:
+  - R2: fallback = unbounded command generation, a NEW danger surface (today there
+    is NO free-text->shell path). Mitigation: same gate, marked, audited, never
+    auto-run; keep it strictly last-resort behind intent+slots.
+Subagent orchestration:
+  - Execution shape: [SEQUENTIAL — depends on Phase 5]
+  - REQUIRED subagent_type: general-purpose
+  - REQUIRED model: sonnet
+  - Run in background: no
+  - Brief template:
+      "Execute Phase 7 of lifecycle/pending/plans/nl-pipeline-buildout.txt. Your
+       slice: core/agent/pipeline/fallback.py — a last-resort free-text argv path
+       that routes through the UNCHANGED permissions.classify, renders an I2-clean
+       'unverified/best-effort' marker, audits with source=fallback, and NEVER
+       auto-runs. Read Phase 7 + risk R2. Touch only core/agent/pipeline/fallback.py
+       + its test. Validation: fallback argv hits classify; destructive ->
+       CONFIRM_TYPED/REFUSE; audit has source=fallback; no auto-run. Evidence:
+       passing test_pipeline_fallback.py. Print one-line summary and exit."
+
+---------------------------------------------------------------------
+### PHASE 8: Compound / multi-step planning (static plan, dynamic re-plan)
+---------------------------------------------------------------------
+Prerequisites: Phases 5 + 6 (each step reuses decomposition + verification).
+Deliverables:
+  - core/agent/pipeline/plan.py:
+      * Cheap heuristic compound detector FIRST (conjunctions "and/then/;",
+        multiple verb/object pairs) BEFORE any model judgment.
+      * Static planning: decompose into an ordered list of single-op steps and show
+        the FULL plan (I2-clean) before ANY step runs.
+      * Execute steps sequentially through the spine; VERIFY each (Phase 6);
+        DYNAMIC re-plan only when a verification INVALIDATES the remaining plan.
+Steps:
+  1. Implement the heuristic detector (regex on conjunctions + a light verb/object
+     counter). A positive detection is an escalation trigger into the compound path.
+  2. Build the static plan (each step = an intent+slots+assemble unit).
+  3. Render the whole plan up front; require confirmation to proceed; run + verify
+     each step; on a verification that invalidates downstream, re-plan the REMAINDER
+     only (never silent full auto-continue).
+Validation:
+  - test_pipeline_plan.py: a conjunction request produces a multi-step plan shown
+    before execution; a mid-plan verification failure triggers a bounded re-plan of
+    the remainder (not the whole thing); destructive steps still gate individually.
+Risks / Edge cases:
+  - Runaway re-planning. Mitigation: re-plan is bounded and only on
+    verification-invalidation; each step still passes the gate independently.
+  - The model holding cross-step state (non-goal). Mitigation: state lives in
+    plan.py (deterministic), not the model — each step is a fresh stateless call.
+Subagent orchestration:
+  - Execution shape: [SEQUENTIAL — depends on Phases 5,6]
+  - REQUIRED subagent_type: general-purpose
+  - REQUIRED model: opus (multi-step control flow + re-plan boundaries + per-step
+    gate interplay is the gnarliest control logic in the plan)
+  - Run in background: no
+  - Brief template:
+      "Execute Phase 8 of lifecycle/pending/plans/nl-pipeline-buildout.txt. Your
+       slice: core/agent/pipeline/plan.py — cheap-heuristic compound detection,
+       static full-plan-before-any-step, sequential execution with per-step Phase-6
+       verification, and bounded dynamic re-plan ONLY on verification-invalidation.
+       Read Phase 8. Touch only core/agent/pipeline/plan.py + its test. Each step
+       reuses decomposition (Phase 5) + verify (Phase 6) + the unchanged gate.
+       Validation: plan shown before run; mid-plan failure re-plans the remainder;
+       destructive steps gate individually. Evidence: passing test_pipeline_plan.py.
+       Print one-line summary and exit."
+
+---------------------------------------------------------------------
+### PHASE 9: Man-page schema breadth track (BUILD-TIME, versioned, gated) — SEPARATE
+---------------------------------------------------------------------
+Prerequisites: Phase 2 (must emit the frozen OpSpec/ArgSpec shape). NOT on the
+critical path — Phases 1-8 ship without it. Can start anytime after Phase 2.
+Deliverables:
+  - tools/manpage/parse.py (best-effort troff/mandoc parser), generate_schemas.py
+    (emits OpSpec/ArgSpec in the FROZEN shape), models/schemas/manpages.vN.json.
+  - A registration path that loads generated tools into the registry as ALWAYS-GATED
+    (no faithful-argv ALLOW tuning) -> they land on the classifier's default-deny
+    floor (WRITE->CONFIRM; destructive shapes still escalate via the argv taxonomy).
+  - Version pin: each schema versioned to package NEVRA / `--version`; on boot
+    mismatch, mark the tool "unverified" and force it down the gated/fallback path.
+Steps:
+  1. Parse the top-N Radagon sysadmin binaries (curate the list; do NOT boil the
+     man ocean). Handle the known edge cases candidly: optional-arg flags
+     (--color[=WHEN]), mutually exclusive groups, repeatable flags, --long=val vs
+     --long val, positionals, subcommands with own man pages (git/systemctl/dnf).
+  2. Emit the versioned artifact; NEVER parse troff on the shipped box.
+  3. Register generated tools gated; add drift detection at boot.
+Validation:
+  - test_manpage_parser.py: the parser produces valid OpSpec/ArgSpec for a curated
+    sample; generated tools register and classify to at-least-WRITE by default; a
+    version mismatch marks the tool unverified.
+Risks / Edge cases:
+  - R5 schema drift. Mitigation: version pin + unverified->gated fallback.
+  - Parser fragility. Mitigation: best-effort + human curation; breadth arrives
+    gated, speed only after curation.
+Subagent orchestration:
+  - Execution shape: [PARALLEL FANOUT OK — independent of Phases 3-8 once Phase 2
+    lands]; internally the per-binary parsing sub-units can fan out if the curated
+    list is large (soft ceiling ~10 siblings).
+  - REQUIRED subagent_type: general-purpose
+  - REQUIRED model: sonnet (parser + generator are mechanical-ish; opus not needed)
+  - Run in background: yes (long, off critical path)
+  - Brief template:
+      "Execute Phase 9 of lifecycle/pending/plans/nl-pipeline-buildout.txt. Your
+       slice: build tools/manpage/{parse,generate_schemas}.py emitting a versioned
+       models/schemas/manpages.vN.json in the FROZEN OpSpec/ArgSpec shape, register
+       generated tools ALWAYS-GATED (default-deny floor), add NEVRA/--version drift
+       detection. Read Phase 9 + the brainstorm 'man-page schemas vs frozen
+       ToolSpec' section. Touch only tools/manpage/, models/schemas/, and the test.
+       Do NOT parse troff at runtime; do NOT change core/tools contract. Validation:
+       curated sample generates valid specs; generated tools classify >= WRITE;
+       version mismatch marks unverified. Evidence: passing test_manpage_parser.py.
+       Print one-line summary and exit."
+
+=====================================================================
+## 4. DATA MODEL CHANGES
+=====================================================================
+None (no database). New in-memory/contract types only:
+  - StrategyResult (strategy.py): {calls, misses, english_content, source}.
+  - AssembleResult / Unresolved (assembler.py).
+  - IntentResult / NoConfidentMatch (intent.py).
+  - VerifyOutcome (verify.py).
+  - Audit schema ADDITION (additive, not a migration): a `source` field
+    ("native"|"decomposed"|"fallback") + a `verify` sub-record. AuditLog is
+    append-only JSONL; new optional fields are backward-compatible. FLAG: confirm
+    core/agent/audit.py tolerates extra fields (it should — JSONL).
+  - Man-page schema artifact (Phase 9): models/schemas/manpages.vN.json — a FILE,
+    versioned to NEVRA/--version.
+
+=====================================================================
+## 5. API CONTRACT
+=====================================================================
+No network API. The internal "contract" is the UnderstandingStrategy protocol:
+  propose(user_input, snapshot_text, messages, tools, responder, router)
+      -> StrategyResult(calls: list[ParsedCall], misses, english_content, source)
+Both NativeToolCallStrategy and DecomposedStrategy implement it. ParsedCall is the
+FROZEN router shape (call_id, tool, operation, args, permission_class) and is the
+ONLY thing that flows into the unchanged gate/dispatch/audit spine.
+
+=====================================================================
+## 6. WORKER / QUEUE CHANGES
+=====================================================================
+No job queue. The only concurrency is the slot-worker thread pool (Phase 4),
+capped by ERDTREE_SLOT_WORKERS and Phase-0 findings. All calls are localhost
+Ollama (I1). Idempotency of RETRIES is enforced by op-class keying (Phase 6),
+not a queue.
+
+=====================================================================
+## 7. FRONTEND CHANGES
+=====================================================================
+Terminal only (no GUI — CLAUDE.md "What This Is NOT"). Presentation additions,
+all I2-clean, all through the existing ReplIO seam:
+  - Compound: render the full plan before any step (Phase 8).
+  - Fallback: a visible "unverified / best-effort" marker (Phase 7).
+  - Verification: a terse post-op state confirmation ("nginx is active"); no
+    AI/LLM/model language. Reuse ConsoleIO's tool_step / tool_output hooks.
+No new user-facing string may contain AI/LLM/model/agent language (I2).
+
+=====================================================================
+## 8. TESTING STRATEGY
+=====================================================================
+Unit (dev-host, no network — inject stub responder/embedder):
+  - test_pipeline_strategy / intent / slots / assembler / verify / fallback / plan.
+Integration / convergence (the load-bearing ones):
+  - test_pipeline_convergence.py: NO pipeline path reaches registry.dispatch except
+    via permissions.classify on the same synthesized argv; destructive parity native
+    vs decomposed. (Phase 5 — consensus-verification-duo audited.)
+  - Existing invariance suites (test_integration_invariance.py,
+    test_invariance_baseline.py) MUST stay green at EVERY phase boundary.
+Bench:
+  - bench/cases/ extended with labeled intent+slot + compound cases; score decomposed
+    vs native; prove validity up on hard cases, no regression on easy cases.
+Manual QA (mossad only — no Ollama on macOS host):
+  - [ ] Common op ("restart nginx") p50 unchanged under fast-then-decompose.
+  - [ ] Hard/compound op decomposes, shows plan, gates each step.
+  - [ ] Destructive op ("format /dev/sdb") -> CONFIRM_TYPED via decomposition.
+  - [ ] Non-interactive destructive -> REFUSE (never auto-run).
+  - [ ] Fallback op renders "unverified" + audits source=fallback.
+  - [ ] Verification retry stops at the cap for an idempotent op; escalates (no
+        retry) for a destructive op.
+
+=====================================================================
+## 9. ROLLOUT & OBSERVABILITY
+=====================================================================
+Feature flags (env, opaque in main.py — I6):
+  - ERDTREE_UNDERSTANDING default `native` (today's behavior). Flip to
+    `fast-then-decompose` only after the Phase-5 mossad latency checkpoint proves
+    common-op p50 is unchanged. `decomposed` (always-on) is for bench/testing.
+  - ERDTREE_VERIFY default `off` until the Phase-6 mossad checkpoint.
+Observability:
+  - Audit `source` field makes native/decomposed/fallback usage queryable.
+  - Audit `verify` sub-record records post-check + retry count + escalation.
+LATENCY MEASUREMENT MILESTONES (explicit checkpoints — the go/no-go for defaulting):
+  - CHECKPOINT A (Phase 0): single-shot p50/p95 + slot-worker concurrency on mossad.
+  - CHECKPOINT B (Phase 5): common-op p50 under fast-then-decompose == native p50;
+    hard-op escalation cost recorded. GATES flipping the default flag.
+  - CHECKPOINT C (Phase 6): verification round-trip cost on mossad. GATES
+    ERDTREE_VERIFY default.
+Rollback:
+  - Every phase is behind a default-off flag or is a pure additive module. Rollback
+    = flip the flag to `native` / `off`. The native path is never removed
+    ("keep stale" — invariant #8). No data migration to reverse.
+
+=====================================================================
+## 10. OPEN QUESTIONS
+=====================================================================
+- Q1 (Phase 0): does Ollama on 2x3060 Ti actually decode slot workers concurrently?
+  If not, cap model slot-workers hard and lean on deterministic extraction.
+- Q2 (Phase 0/3): any usable confidence/logprob from the endpoint? If not, synthesize
+  from intent-distance + slot-completeness + assembler-validation; self-consistency
+  sampling costs MORE calls (weigh against I6/I8).
+- Q3 (Phase 3): intent via 0003 sqlite-vec embeddings vs a model call — spike decides.
+- Q4 (Phase 9): how many binaries does Radagon need day-one? Curate a top-N list.
+- Q5 (product): on Marika hardware, is a larger model ever present to escalate to,
+  or is the top rung always "ask the human"? (Likely product-defining.)
+- Q6 (Phase 2): confirm min/max range semantics are NOT needed on ArgSpec now
+  (assembler does type + required + enum(op) only; defer numeric ranges).
+
+=====================================================================
+## 11. ESTIMATED EFFORT
+=====================================================================
+  Phase 0  Measure & decide ............. S  (mostly mossad round-trips + 0004)
+  Phase 1  Strategy seam (spine) ........ M  (refactor risk, not LOC)
+  Phase 2  Assembler .................... M
+  Phase 3  Intent classifier ............ M  (spike + impl)
+  Phase 4  Slot extraction .............. L  (deterministic resolver + parallel)
+  Phase 5  Escalation wiring + bench .... L  (highest risk; + verification duo)
+  Phase 6  Verification + retry ......... M  (safety-critical taxonomy)
+  Phase 7  Fallback ..................... S
+  Phase 8  Compound planning ............ L  (control flow + re-plan)
+  Phase 9  Man-page track ............... XL (separate track, off critical path)
+Critical path: 0 -> 1 -> 2 -> {3||4} -> 5 -> 6 -> 8. (7 branches off 5; 9 branches
+off 2 and is independent.)
+
+=====================================================================
+## 12. EXECUTOR ORCHESTRATION GUIDE
+=====================================================================
+
+### 12.1 Parallelism map
+  Phase | Execution           | Siblings | Depends on | Model | Subagent type
+  P0    | SINGLE (bg)         | —        | none       | sonnet| general-purpose
+  P1    | SEQUENTIAL          | —        | P0         | opus  | refractor-pair
+  P2    | SEQUENTIAL          | —        | P1         | sonnet| general-purpose
+  P3    | PARALLEL (bg)       | 2 (w/P4) | P2         | sonnet| general-purpose
+  P4    | PARALLEL (bg)       | 2 (w/P3) | P2         | sonnet| general-purpose
+  P5    | SEQUENTIAL          | —        | P2,P3,P4   | opus  | general-purpose
+  P5v   | SINGLE (verify)     | —        | P5         | opus  | consensus-verification-duo
+  P6    | SEQUENTIAL          | —        | P5         | opus  | general-purpose
+  P7    | SEQUENTIAL          | —        | P5         | sonnet| general-purpose
+  P8    | SEQUENTIAL          | —        | P5,P6      | opus  | general-purpose
+  P9    | PARALLEL (bg)       | ~N       | P2         | sonnet| general-purpose
+
+  DAG (non-linear):
+        P0
+         |
+        P1
+         |
+        P2 ------------------+
+        / \                  \
+      P3   P4                 P9 (independent breadth track)
+        \ /
+        P5 --> P5v(verify)
+        /|\
+       P7 P6
+           |
+          P8
+  (P7 depends only on P5; P6 depends on P5; P8 joins P5+P6.)
+
+### 12.2 Cross-phase work consolidation
+  - P2, P3, P4, P5 all read the frozen contract in core/tools/__init__.py and the
+    router validation in core/agent/router.py — load these once at executor start,
+    pass the distilled shape (ToolSpec/OpSpec/ArgSpec + validate_arguments) into
+    briefs rather than re-reading in each.
+  - P5, P6, P7, P8 ALL edit or read core/agent/repl.py's seam. P5 owns the seam
+    edit; P6/P7/P8 must NOT re-edit run_turn — they add pipeline modules and wire
+    via main.py flags. If any of P6/P7/P8 needs a repl change, SERIALIZE it after
+    P5 (shared-file rule — never parallel-edit repl.py).
+  - P3 and P4 are the ONLY genuine parallel pair (disjoint files intent.py/slots.py).
+  - P0 and P5(latency) and P6(latency) each need mossad; batch mossad probes to
+    avoid redundant round-trips.
+
+### 12.3 Model-mix budget
+  Rough split across the 10 units (P0-P9 + P5v):
+    fable 0% / opus ~45% / sonnet ~55% / haiku 0%.
+  Opus is concentrated on the risk-bearing units: P1 (spine refactor), P5 + P5v
+  (gate convergence — the #1 risk), P6 (destructive-retry taxonomy), P8 (multi-step
+  control flow). Everything else is sonnet. NO fable: nothing here is frontier-grade
+  — the hard parts are safety-critical (well-served by opus + a verification duo),
+  not novel-algorithm or whole-system-architecture. NO haiku: even the "simple"
+  phases touch the gate-convergence contract and warrant sonnet.
+
+### 12.4 Estimated wall-clock
+  Best case (P3||P4 parallel; P9 + latency probes backgrounded):
+    P0 + P1 + P2 + max(P3,P4) + P5 + P5v + P6 + P8 ≈ the critical chain.
+    Roughly one working session per opus phase, less for sonnet — call it
+    ~1.5-2 days of agent wall-clock with parallelism.
+  Strictly serial (worst case): ~3-3.5 days (P9's XL dominates if not backgrounded).
+  Critical path: P0 -> P1 -> P2 -> P4 (the L phase, > P3) -> P5 -> P5v -> P6 -> P8.
+
+### 12.5 Failure recovery policy
+  - P0: if NO-GO (slot workers strictly serialize, no speedup) -> do NOT abort;
+    PAUSE and escalate to user with the numbers. The reliability win may still
+    justify decomposition as a slow escalation tier; the user decides.
+  - P1: retry up to 2x with refractor-pair (a pure move should be deterministic).
+    If the invariance suite stays red after 2x -> PAUSE and escalate (spine risk).
+  - P2, P3, P4, P7, P9: retry up to 2x with the same subagent (non-flaky expected);
+    on continued failure, log a deferred-item and continue siblings, then escalate.
+  - P5 / P5v: NEVER auto-skip. If the convergence/no-bypass audit finds ANY path to
+    dispatch that bypasses classify -> HARD STOP + escalate. This is R1.
+  - P6: if a test shows a destructive op could auto-retry -> HARD STOP + escalate.
+  - P8: retry up to 2x; on failure, ship Phases 1-7 (compound is additive) and
+    defer P8.
+  - Default if unspecified: pause and escalate.
+
+### 12.6 Audit trail location
+  Per-phase evidence: runtime/audits/nl-pipeline/phase-<id>.md
+  Latency checkpoints: runtime/audits/nl-pipeline/phase-0-measurements.md,
+                       phase-5-latency.md, phase-6-latency.md
+  Final rollup: runtime/audits/nl-pipeline/FINAL.md
+
+=====================================================================
+END OF PLAN
+=====================================================================

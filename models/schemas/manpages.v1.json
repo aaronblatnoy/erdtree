@@ -1,0 +1,743 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-07-01",
+  "description": "Curated man-page derived tool schemas for Radagon sysadmin binaries. Build-time artifact; never parsed at runtime on the shipped box.",
+  "tools": {
+    "systemctl": {
+      "binary": "systemctl",
+      "version_pin": "255",
+      "version_source": "--version",
+      "version_pattern": "systemd (\\d+)",
+      "description": "Control the systemd system and service manager",
+      "ops": [
+        {
+          "op_name": "status",
+          "permission_class": "read",
+          "description": "Show runtime status of one or more units",
+          "args": [
+            {"name": "unit", "type": "str", "required": false, "description": "Unit name(s)", "default": null},
+            {"name": "lines", "type": "int", "required": false, "description": "Number of journal lines to show", "default": null},
+            {"name": "no_pager", "type": "bool", "required": false, "description": "Do not pipe output into a pager", "default": false}
+          ]
+        },
+        {
+          "op_name": "start",
+          "permission_class": "write",
+          "description": "Start (activate) one or more units",
+          "args": [
+            {"name": "unit", "type": "str", "required": true, "description": "Unit name to start", "default": null}
+          ]
+        },
+        {
+          "op_name": "stop",
+          "permission_class": "write",
+          "description": "Stop (deactivate) one or more units",
+          "args": [
+            {"name": "unit", "type": "str", "required": true, "description": "Unit name to stop", "default": null}
+          ]
+        },
+        {
+          "op_name": "restart",
+          "permission_class": "write",
+          "description": "Stop and then start one or more units",
+          "args": [
+            {"name": "unit", "type": "str", "required": true, "description": "Unit name to restart", "default": null}
+          ]
+        },
+        {
+          "op_name": "reload",
+          "permission_class": "write",
+          "description": "Reload one or more units",
+          "args": [
+            {"name": "unit", "type": "str", "required": true, "description": "Unit name to reload", "default": null}
+          ]
+        },
+        {
+          "op_name": "enable",
+          "permission_class": "write",
+          "description": "Enable one or more unit files",
+          "args": [
+            {"name": "unit", "type": "str", "required": true, "description": "Unit name to enable", "default": null},
+            {"name": "now", "type": "bool", "required": false, "description": "Also start the unit", "default": false}
+          ]
+        },
+        {
+          "op_name": "disable",
+          "permission_class": "write",
+          "description": "Disable one or more unit files",
+          "args": [
+            {"name": "unit", "type": "str", "required": true, "description": "Unit name to disable", "default": null},
+            {"name": "now", "type": "bool", "required": false, "description": "Also stop the unit", "default": false}
+          ]
+        },
+        {
+          "op_name": "is-active",
+          "permission_class": "read",
+          "description": "Check whether units are active",
+          "args": [
+            {"name": "unit", "type": "str", "required": true, "description": "Unit name to check", "default": null}
+          ]
+        },
+        {
+          "op_name": "is-enabled",
+          "permission_class": "read",
+          "description": "Check whether unit files are enabled",
+          "args": [
+            {"name": "unit", "type": "str", "required": true, "description": "Unit name to check", "default": null}
+          ]
+        },
+        {
+          "op_name": "list-units",
+          "permission_class": "read",
+          "description": "List units that are currently in memory",
+          "args": [
+            {"name": "type", "type": "str", "required": false, "description": "Filter by unit type", "default": null},
+            {"name": "state", "type": "str", "required": false, "description": "Filter by unit state", "default": null},
+            {"name": "no_pager", "type": "bool", "required": false, "description": "Do not pipe output into a pager", "default": false}
+          ]
+        },
+        {
+          "op_name": "daemon-reload",
+          "permission_class": "write",
+          "description": "Reload systemd manager configuration",
+          "args": []
+        }
+      ]
+    },
+    "dnf": {
+      "binary": "dnf",
+      "version_pin": "4",
+      "version_source": "--version",
+      "version_pattern": "(\\d+\\.\\d+)",
+      "description": "DNF package manager for RPM-based Linux",
+      "ops": [
+        {
+          "op_name": "install",
+          "permission_class": "write",
+          "description": "Install one or more packages",
+          "args": [
+            {"name": "package", "type": "str", "required": true, "description": "Package name(s) to install", "default": null},
+            {"name": "assume_yes", "type": "bool", "required": false, "description": "Assume yes for all questions", "default": false},
+            {"name": "no_best", "type": "bool", "required": false, "description": "Do not limit to best candidate", "default": false}
+          ]
+        },
+        {
+          "op_name": "remove",
+          "permission_class": "destructive",
+          "description": "Remove one or more packages from the system",
+          "args": [
+            {"name": "package", "type": "str", "required": true, "description": "Package name(s) to remove", "default": null},
+            {"name": "assume_yes", "type": "bool", "required": false, "description": "Assume yes for all questions", "default": false}
+          ]
+        },
+        {
+          "op_name": "update",
+          "permission_class": "write",
+          "description": "Update one or more packages",
+          "args": [
+            {"name": "package", "type": "str", "required": false, "description": "Package name(s) to update (empty = all)", "default": null},
+            {"name": "assume_yes", "type": "bool", "required": false, "description": "Assume yes for all questions", "default": false}
+          ]
+        },
+        {
+          "op_name": "upgrade",
+          "permission_class": "write",
+          "description": "Upgrade one or more packages (alias for update)",
+          "args": [
+            {"name": "package", "type": "str", "required": false, "description": "Package name(s) to upgrade", "default": null},
+            {"name": "assume_yes", "type": "bool", "required": false, "description": "Assume yes for all questions", "default": false}
+          ]
+        },
+        {
+          "op_name": "search",
+          "permission_class": "read",
+          "description": "Search package metadata for a keyword",
+          "args": [
+            {"name": "keyword", "type": "str", "required": true, "description": "Keyword to search for", "default": null}
+          ]
+        },
+        {
+          "op_name": "info",
+          "permission_class": "read",
+          "description": "Show details about one or more packages",
+          "args": [
+            {"name": "package", "type": "str", "required": true, "description": "Package name", "default": null}
+          ]
+        },
+        {
+          "op_name": "list",
+          "permission_class": "read",
+          "description": "List packages matching given criteria",
+          "args": [
+            {"name": "installed", "type": "bool", "required": false, "description": "List installed packages", "default": false},
+            {"name": "available", "type": "bool", "required": false, "description": "List available packages", "default": false},
+            {"name": "updates", "type": "bool", "required": false, "description": "List packages with available updates", "default": false},
+            {"name": "package", "type": "str", "required": false, "description": "Package name or glob", "default": null}
+          ]
+        },
+        {
+          "op_name": "check-update",
+          "permission_class": "read",
+          "description": "Check for available package updates",
+          "args": []
+        }
+      ]
+    },
+    "journalctl": {
+      "binary": "journalctl",
+      "version_pin": "255",
+      "version_source": "--version",
+      "version_pattern": "systemd (\\d+)",
+      "description": "Query and display messages from the systemd journal",
+      "ops": [
+        {
+          "op_name": "_main",
+          "permission_class": "read",
+          "description": "Query the systemd journal",
+          "args": [
+            {"name": "unit", "type": "str", "required": false, "description": "Filter output to this unit (-u)", "default": null},
+            {"name": "follow", "type": "bool", "required": false, "description": "Follow journal output (-f)", "default": false},
+            {"name": "lines", "type": "int", "required": false, "description": "Number of journal lines to show (-n)", "default": null},
+            {"name": "since", "type": "str", "required": false, "description": "Start of the time range (--since)", "default": null},
+            {"name": "until", "type": "str", "required": false, "description": "End of the time range (--until)", "default": null},
+            {"name": "priority", "type": "str", "required": false, "description": "Filter by message priority (-p)", "default": null},
+            {"name": "boot", "type": "str", "required": false, "description": "Show log from specific boot (-b)", "default": null},
+            {"name": "no_pager", "type": "bool", "required": false, "description": "Do not pipe output into a pager", "default": false},
+            {"name": "output", "type": "str", "required": false, "description": "Output format (-o)", "default": null},
+            {"name": "catalog", "type": "bool", "required": false, "description": "Augment lines with explanations (-x)", "default": false},
+            {"name": "reverse", "type": "bool", "required": false, "description": "Reverse output (newest first) (-r)", "default": false}
+          ]
+        }
+      ]
+    },
+    "firewall-cmd": {
+      "binary": "firewall-cmd",
+      "version_pin": "1",
+      "version_source": "--version",
+      "version_pattern": "(\\d+\\.\\d+)",
+      "description": "Dynamic firewall manager (firewalld CLI)",
+      "ops": [
+        {
+          "op_name": "list-all",
+          "permission_class": "read",
+          "description": "List all current firewall settings",
+          "args": [
+            {"name": "zone", "type": "str", "required": false, "description": "Zone name", "default": null}
+          ]
+        },
+        {
+          "op_name": "add-service",
+          "permission_class": "write",
+          "description": "Add a service to a zone",
+          "args": [
+            {"name": "service", "type": "str", "required": true, "description": "Service name (e.g. http, https)", "default": null},
+            {"name": "zone", "type": "str", "required": false, "description": "Zone name", "default": null},
+            {"name": "permanent", "type": "bool", "required": false, "description": "Make the change permanent", "default": false}
+          ]
+        },
+        {
+          "op_name": "remove-service",
+          "permission_class": "write",
+          "description": "Remove a service from a zone",
+          "args": [
+            {"name": "service", "type": "str", "required": true, "description": "Service name", "default": null},
+            {"name": "zone", "type": "str", "required": false, "description": "Zone name", "default": null},
+            {"name": "permanent", "type": "bool", "required": false, "description": "Make the change permanent", "default": false}
+          ]
+        },
+        {
+          "op_name": "query-service",
+          "permission_class": "read",
+          "description": "Query whether a service is enabled in a zone",
+          "args": [
+            {"name": "service", "type": "str", "required": true, "description": "Service name", "default": null},
+            {"name": "zone", "type": "str", "required": false, "description": "Zone name", "default": null}
+          ]
+        },
+        {
+          "op_name": "add-port",
+          "permission_class": "write",
+          "description": "Add a port/protocol combination to a zone",
+          "args": [
+            {"name": "port", "type": "str", "required": true, "description": "Port/protocol (e.g. 8080/tcp)", "default": null},
+            {"name": "zone", "type": "str", "required": false, "description": "Zone name", "default": null},
+            {"name": "permanent", "type": "bool", "required": false, "description": "Make the change permanent", "default": false}
+          ]
+        },
+        {
+          "op_name": "remove-port",
+          "permission_class": "write",
+          "description": "Remove a port/protocol combination from a zone",
+          "args": [
+            {"name": "port", "type": "str", "required": true, "description": "Port/protocol", "default": null},
+            {"name": "zone", "type": "str", "required": false, "description": "Zone name", "default": null},
+            {"name": "permanent", "type": "bool", "required": false, "description": "Make the change permanent", "default": false}
+          ]
+        },
+        {
+          "op_name": "reload",
+          "permission_class": "write",
+          "description": "Reload firewall rules keeping state information",
+          "args": []
+        }
+      ]
+    },
+    "ip": {
+      "binary": "ip",
+      "version_pin": "6",
+      "version_source": "-V",
+      "version_pattern": "iproute2-(\\d+)",
+      "description": "Show / manipulate routing, network devices, interfaces and tunnels",
+      "ops": [
+        {
+          "op_name": "addr-show",
+          "permission_class": "read",
+          "description": "Display IP addresses for network interfaces",
+          "args": [
+            {"name": "dev", "type": "str", "required": false, "description": "Network interface name", "default": null}
+          ]
+        },
+        {
+          "op_name": "link-show",
+          "permission_class": "read",
+          "description": "Display network interface attributes",
+          "args": [
+            {"name": "dev", "type": "str", "required": false, "description": "Network interface name", "default": null}
+          ]
+        },
+        {
+          "op_name": "route-show",
+          "permission_class": "read",
+          "description": "Display the routing table",
+          "args": [
+            {"name": "table", "type": "str", "required": false, "description": "Routing table name or number", "default": null}
+          ]
+        },
+        {
+          "op_name": "link-set",
+          "permission_class": "write",
+          "description": "Change network interface attributes",
+          "args": [
+            {"name": "dev", "type": "str", "required": true, "description": "Network interface name", "default": null},
+            {"name": "up", "type": "bool", "required": false, "description": "Bring interface up", "default": false},
+            {"name": "down", "type": "bool", "required": false, "description": "Bring interface down", "default": false}
+          ]
+        }
+      ]
+    },
+    "useradd": {
+      "binary": "useradd",
+      "version_pin": "4",
+      "version_source": "--version",
+      "version_pattern": "(\\d+\\.\\d+)",
+      "description": "Create a new user account",
+      "ops": [
+        {
+          "op_name": "_main",
+          "permission_class": "write",
+          "description": "Create a new user",
+          "args": [
+            {"name": "username", "type": "str", "required": true, "description": "Login name for the new user", "default": null},
+            {"name": "uid", "type": "int", "required": false, "description": "Numerical user ID", "default": null},
+            {"name": "gid", "type": "str", "required": false, "description": "Primary group name or number", "default": null},
+            {"name": "groups", "type": "str", "required": false, "description": "Supplementary groups", "default": null},
+            {"name": "home_dir", "type": "str", "required": false, "description": "Home directory (-d)", "default": null},
+            {"name": "shell", "type": "str", "required": false, "description": "Login shell (-s)", "default": null},
+            {"name": "create_home", "type": "bool", "required": false, "description": "Create home directory (-m)", "default": false},
+            {"name": "system", "type": "bool", "required": false, "description": "Create a system account (-r)", "default": false},
+            {"name": "comment", "type": "str", "required": false, "description": "GECOS field comment (-c)", "default": null}
+          ]
+        }
+      ]
+    },
+    "userdel": {
+      "binary": "userdel",
+      "version_pin": "4",
+      "version_source": "--version",
+      "version_pattern": "(\\d+\\.\\d+)",
+      "description": "Delete a user account and related files",
+      "ops": [
+        {
+          "op_name": "_main",
+          "permission_class": "destructive",
+          "description": "Delete a user account",
+          "args": [
+            {"name": "username", "type": "str", "required": true, "description": "Login name of the user to delete", "default": null},
+            {"name": "remove", "type": "bool", "required": false, "description": "Remove home directory and mail spool (-r)", "default": false},
+            {"name": "force", "type": "bool", "required": false, "description": "Force removal even if user is logged in (-f)", "default": false}
+          ]
+        }
+      ]
+    },
+    "usermod": {
+      "binary": "usermod",
+      "version_pin": "4",
+      "version_source": "--version",
+      "version_pattern": "(\\d+\\.\\d+)",
+      "description": "Modify a user account",
+      "ops": [
+        {
+          "op_name": "_main",
+          "permission_class": "write",
+          "description": "Modify a user account",
+          "args": [
+            {"name": "username", "type": "str", "required": true, "description": "Login name of the user to modify", "default": null},
+            {"name": "uid", "type": "int", "required": false, "description": "New numerical user ID (-u)", "default": null},
+            {"name": "gid", "type": "str", "required": false, "description": "New primary group (-g)", "default": null},
+            {"name": "groups", "type": "str", "required": false, "description": "New supplementary groups (-G)", "default": null},
+            {"name": "append", "type": "bool", "required": false, "description": "Append to supplementary groups (-a)", "default": false},
+            {"name": "home", "type": "str", "required": false, "description": "New home directory (-d)", "default": null},
+            {"name": "shell", "type": "str", "required": false, "description": "New login shell (-s)", "default": null},
+            {"name": "lock", "type": "bool", "required": false, "description": "Lock the user account (-L)", "default": false},
+            {"name": "unlock", "type": "bool", "required": false, "description": "Unlock the user account (-U)", "default": false},
+            {"name": "comment", "type": "str", "required": false, "description": "New GECOS comment (-c)", "default": null}
+          ]
+        }
+      ]
+    },
+    "chmod": {
+      "binary": "chmod",
+      "version_pin": "8",
+      "version_source": "--version",
+      "version_pattern": "(\\d+\\.\\d+)",
+      "description": "Change file mode bits",
+      "ops": [
+        {
+          "op_name": "_main",
+          "permission_class": "write",
+          "description": "Change file permissions",
+          "args": [
+            {"name": "mode", "type": "str", "required": true, "description": "Permission mode (e.g. 755, u+x, a-w)", "default": null},
+            {"name": "file", "type": "str", "required": true, "description": "File or directory path", "default": null},
+            {"name": "recursive", "type": "bool", "required": false, "description": "Change permissions recursively (-R)", "default": false},
+            {"name": "verbose", "type": "bool", "required": false, "description": "Output a diagnostic for every file processed (-v)", "default": false}
+          ]
+        }
+      ]
+    },
+    "chown": {
+      "binary": "chown",
+      "version_pin": "8",
+      "version_source": "--version",
+      "version_pattern": "(\\d+\\.\\d+)",
+      "description": "Change file owner and group",
+      "ops": [
+        {
+          "op_name": "_main",
+          "permission_class": "write",
+          "description": "Change file ownership",
+          "args": [
+            {"name": "owner", "type": "str", "required": true, "description": "New owner (user[:group])", "default": null},
+            {"name": "file", "type": "str", "required": true, "description": "File or directory path", "default": null},
+            {"name": "recursive", "type": "bool", "required": false, "description": "Operate on files and directories recursively (-R)", "default": false},
+            {"name": "verbose", "type": "bool", "required": false, "description": "Output a diagnostic for every file processed (-v)", "default": false}
+          ]
+        }
+      ]
+    },
+    "rsync": {
+      "binary": "rsync",
+      "version_pin": "3",
+      "version_source": "--version",
+      "version_pattern": "rsync  version (\\d+\\.\\d+)",
+      "description": "Fast, versatile remote (and local) file-copying tool",
+      "ops": [
+        {
+          "op_name": "_main",
+          "permission_class": "write",
+          "description": "Synchronise files between source and destination",
+          "args": [
+            {"name": "source", "type": "str", "required": true, "description": "Source path", "default": null},
+            {"name": "destination", "type": "str", "required": true, "description": "Destination path", "default": null},
+            {"name": "archive", "type": "bool", "required": false, "description": "Archive mode (-a)", "default": false},
+            {"name": "verbose", "type": "bool", "required": false, "description": "Increase verbosity (-v)", "default": false},
+            {"name": "recursive", "type": "bool", "required": false, "description": "Recurse into directories (-r)", "default": false},
+            {"name": "delete", "type": "bool", "required": false, "description": "Delete extraneous files from destination (--delete)", "default": false},
+            {"name": "exclude", "type": "str", "required": false, "description": "Exclude files matching PATTERN (--exclude)", "default": null},
+            {"name": "compress", "type": "bool", "required": false, "description": "Compress file data during transfer (-z)", "default": false},
+            {"name": "dry_run", "type": "bool", "required": false, "description": "Perform a trial run with no changes (-n)", "default": false},
+            {"name": "progress", "type": "bool", "required": false, "description": "Show progress during transfer (--progress)", "default": false}
+          ]
+        }
+      ]
+    },
+    "tar": {
+      "binary": "tar",
+      "version_pin": "1",
+      "version_source": "--version",
+      "version_pattern": "tar \\(GNU tar\\) (\\d+\\.\\d+)",
+      "description": "GNU tape archiving utility",
+      "ops": [
+        {
+          "op_name": "create",
+          "permission_class": "write",
+          "description": "Create a new archive",
+          "args": [
+            {"name": "file", "type": "str", "required": true, "description": "Archive filename (-f)", "default": null},
+            {"name": "source", "type": "str", "required": true, "description": "File(s) or directory to archive", "default": null},
+            {"name": "verbose", "type": "bool", "required": false, "description": "List files as they are processed (-v)", "default": false},
+            {"name": "gzip", "type": "bool", "required": false, "description": "Filter archive through gzip (-z)", "default": false},
+            {"name": "bzip2", "type": "bool", "required": false, "description": "Filter archive through bzip2 (-j)", "default": false},
+            {"name": "xz", "type": "bool", "required": false, "description": "Filter archive through xz (-J)", "default": false}
+          ]
+        },
+        {
+          "op_name": "extract",
+          "permission_class": "write",
+          "description": "Extract files from an archive",
+          "args": [
+            {"name": "file", "type": "str", "required": true, "description": "Archive filename (-f)", "default": null},
+            {"name": "directory", "type": "str", "required": false, "description": "Extract to directory (-C)", "default": null},
+            {"name": "verbose", "type": "bool", "required": false, "description": "List files as they are processed (-v)", "default": false},
+            {"name": "strip_components", "type": "int", "required": false, "description": "Strip leading path components (--strip-components)", "default": null}
+          ]
+        },
+        {
+          "op_name": "list",
+          "permission_class": "read",
+          "description": "List the contents of an archive",
+          "args": [
+            {"name": "file", "type": "str", "required": true, "description": "Archive filename (-f)", "default": null},
+            {"name": "verbose", "type": "bool", "required": false, "description": "List verbosely (-v)", "default": false}
+          ]
+        }
+      ]
+    },
+    "ss": {
+      "binary": "ss",
+      "version_pin": "6",
+      "version_source": "-V",
+      "version_pattern": "ss utility, iproute2-(\\d+)",
+      "description": "Socket statistics",
+      "ops": [
+        {
+          "op_name": "_main",
+          "permission_class": "read",
+          "description": "Show socket statistics",
+          "args": [
+            {"name": "tcp", "type": "bool", "required": false, "description": "Display TCP sockets (-t)", "default": false},
+            {"name": "udp", "type": "bool", "required": false, "description": "Display UDP sockets (-u)", "default": false},
+            {"name": "listening", "type": "bool", "required": false, "description": "Display listening sockets (-l)", "default": false},
+            {"name": "all", "type": "bool", "required": false, "description": "Display all sockets (-a)", "default": false},
+            {"name": "processes", "type": "bool", "required": false, "description": "Show process using socket (-p)", "default": false},
+            {"name": "numeric", "type": "bool", "required": false, "description": "Do not resolve names (-n)", "default": false},
+            {"name": "extended", "type": "bool", "required": false, "description": "Show detailed socket information (-e)", "default": false}
+          ]
+        }
+      ]
+    },
+    "df": {
+      "binary": "df",
+      "version_pin": "8",
+      "version_source": "--version",
+      "version_pattern": "df \\(GNU coreutils\\) (\\d+\\.\\d+)",
+      "description": "Report file system disk space usage",
+      "ops": [
+        {
+          "op_name": "_main",
+          "permission_class": "read",
+          "description": "Show disk space usage",
+          "args": [
+            {"name": "human_readable", "type": "bool", "required": false, "description": "Print sizes in human-readable format (-h)", "default": false},
+            {"name": "all", "type": "bool", "required": false, "description": "Include dummy file systems (-a)", "default": false},
+            {"name": "type", "type": "str", "required": false, "description": "Limit listing to file systems of specified type (-t)", "default": null},
+            {"name": "file", "type": "str", "required": false, "description": "File system or mount point to check", "default": null}
+          ]
+        }
+      ]
+    },
+    "lsblk": {
+      "binary": "lsblk",
+      "version_pin": "2",
+      "version_source": "--version",
+      "version_pattern": "lsblk from util-linux (\\d+\\.\\d+)",
+      "description": "List information about block devices",
+      "ops": [
+        {
+          "op_name": "_main",
+          "permission_class": "read",
+          "description": "List block devices",
+          "args": [
+            {"name": "all", "type": "bool", "required": false, "description": "Also list empty devices (-a)", "default": false},
+            {"name": "bytes", "type": "bool", "required": false, "description": "Print sizes in bytes (-b)", "default": false},
+            {"name": "output", "type": "str", "required": false, "description": "Comma-separated list of columns to output (-o)", "default": null},
+            {"name": "json", "type": "bool", "required": false, "description": "Output in JSON format (-J)", "default": false},
+            {"name": "fs", "type": "bool", "required": false, "description": "Output info about filesystems (-f)", "default": false},
+            {"name": "device", "type": "str", "required": false, "description": "Specific device to list", "default": null}
+          ]
+        }
+      ]
+    },
+    "ps": {
+      "binary": "ps",
+      "version_pin": "3",
+      "version_source": "--version",
+      "version_pattern": "ps from procps-ng (\\d+\\.\\d+)",
+      "description": "Report a snapshot of current processes",
+      "ops": [
+        {
+          "op_name": "_main",
+          "permission_class": "read",
+          "description": "Show process status",
+          "args": [
+            {"name": "all", "type": "bool", "required": false, "description": "Select all processes (-A/-e)", "default": false},
+            {"name": "full_format", "type": "bool", "required": false, "description": "Full-format listing (-f)", "default": false},
+            {"name": "user", "type": "str", "required": false, "description": "Select processes by user (-u)", "default": null},
+            {"name": "pid", "type": "str", "required": false, "description": "Select by PID (-p)", "default": null},
+            {"name": "sort", "type": "str", "required": false, "description": "Sort by key (--sort)", "default": null},
+            {"name": "forest", "type": "bool", "required": false, "description": "ASCII art process hierarchy (--forest)", "default": false}
+          ]
+        }
+      ]
+    },
+    "git": {
+      "binary": "git",
+      "version_pin": "2",
+      "version_source": "--version",
+      "version_pattern": "git version (\\d+\\.\\d+)",
+      "description": "Distributed version control system",
+      "ops": [
+        {
+          "op_name": "status",
+          "permission_class": "read",
+          "description": "Show the working tree status",
+          "args": [
+            {"name": "short", "type": "bool", "required": false, "description": "Give output in short format (-s)", "default": false},
+            {"name": "branch", "type": "bool", "required": false, "description": "Show branch and tracking info (-b)", "default": false}
+          ]
+        },
+        {
+          "op_name": "log",
+          "permission_class": "read",
+          "description": "Show commit logs",
+          "args": [
+            {"name": "oneline", "type": "bool", "required": false, "description": "One commit per line (--oneline)", "default": false},
+            {"name": "graph", "type": "bool", "required": false, "description": "Draw a graph (--graph)", "default": false},
+            {"name": "n", "type": "int", "required": false, "description": "Limit to N commits", "default": null},
+            {"name": "all", "type": "bool", "required": false, "description": "Include all refs (--all)", "default": false},
+            {"name": "author", "type": "str", "required": false, "description": "Filter by author (--author)", "default": null},
+            {"name": "since", "type": "str", "required": false, "description": "Show commits newer than date (--since)", "default": null}
+          ]
+        },
+        {
+          "op_name": "diff",
+          "permission_class": "read",
+          "description": "Show changes between commits, trees, or working tree",
+          "args": [
+            {"name": "staged", "type": "bool", "required": false, "description": "Show staged differences (--staged)", "default": false},
+            {"name": "stat", "type": "bool", "required": false, "description": "Show diffstat (--stat)", "default": false},
+            {"name": "name_only", "type": "bool", "required": false, "description": "Show only file names (--name-only)", "default": false},
+            {"name": "ref", "type": "str", "required": false, "description": "Commit reference to compare against", "default": null}
+          ]
+        },
+        {
+          "op_name": "add",
+          "permission_class": "write",
+          "description": "Add file contents to the staging area",
+          "args": [
+            {"name": "pathspec", "type": "str", "required": true, "description": "File(s) to add", "default": null},
+            {"name": "all", "type": "bool", "required": false, "description": "Stage all changes (-A)", "default": false},
+            {"name": "patch", "type": "bool", "required": false, "description": "Interactively choose hunks (-p)", "default": false}
+          ]
+        },
+        {
+          "op_name": "commit",
+          "permission_class": "write",
+          "description": "Record changes to the repository",
+          "args": [
+            {"name": "message", "type": "str", "required": false, "description": "Commit message (-m)", "default": null},
+            {"name": "all", "type": "bool", "required": false, "description": "Stage all modified/deleted files (-a)", "default": false},
+            {"name": "amend", "type": "bool", "required": false, "description": "Amend the previous commit (--amend)", "default": false}
+          ]
+        },
+        {
+          "op_name": "push",
+          "permission_class": "write",
+          "description": "Update remote refs and associated objects",
+          "args": [
+            {"name": "remote", "type": "str", "required": false, "description": "Remote name (default: origin)", "default": null},
+            {"name": "branch", "type": "str", "required": false, "description": "Branch to push", "default": null},
+            {"name": "force", "type": "bool", "required": false, "description": "Force push (--force)", "default": false},
+            {"name": "set_upstream", "type": "bool", "required": false, "description": "Set upstream for current branch (-u)", "default": false}
+          ]
+        },
+        {
+          "op_name": "pull",
+          "permission_class": "write",
+          "description": "Fetch from and integrate with another repository or branch",
+          "args": [
+            {"name": "remote", "type": "str", "required": false, "description": "Remote name", "default": null},
+            {"name": "branch", "type": "str", "required": false, "description": "Branch to pull", "default": null},
+            {"name": "rebase", "type": "bool", "required": false, "description": "Rebase instead of merge (--rebase)", "default": false}
+          ]
+        },
+        {
+          "op_name": "checkout",
+          "permission_class": "write",
+          "description": "Switch branches or restore working tree files",
+          "args": [
+            {"name": "branch", "type": "str", "required": false, "description": "Branch or commit to check out", "default": null},
+            {"name": "new_branch", "type": "str", "required": false, "description": "Create and check out a new branch (-b)", "default": null},
+            {"name": "pathspec", "type": "str", "required": false, "description": "File(s) to restore", "default": null}
+          ]
+        },
+        {
+          "op_name": "clone",
+          "permission_class": "write",
+          "description": "Clone a repository into a new directory",
+          "args": [
+            {"name": "repository", "type": "str", "required": true, "description": "Repository URL to clone", "default": null},
+            {"name": "directory", "type": "str", "required": false, "description": "Target directory", "default": null},
+            {"name": "branch", "type": "str", "required": false, "description": "Branch to check out after cloning (-b)", "default": null},
+            {"name": "depth", "type": "int", "required": false, "description": "Create a shallow clone (--depth)", "default": null}
+          ]
+        },
+        {
+          "op_name": "merge",
+          "permission_class": "write",
+          "description": "Join two or more development histories together",
+          "args": [
+            {"name": "branch", "type": "str", "required": true, "description": "Branch to merge", "default": null},
+            {"name": "no_ff", "type": "bool", "required": false, "description": "Always create a merge commit (--no-ff)", "default": false},
+            {"name": "squash", "type": "bool", "required": false, "description": "Squash commits into one (--squash)", "default": false}
+          ]
+        },
+        {
+          "op_name": "init",
+          "permission_class": "write",
+          "description": "Create an empty Git repository",
+          "args": [
+            {"name": "directory", "type": "str", "required": false, "description": "Directory to initialise", "default": null},
+            {"name": "bare", "type": "bool", "required": false, "description": "Create a bare repository (--bare)", "default": false}
+          ]
+        }
+      ]
+    },
+    "curl": {
+      "binary": "curl",
+      "version_pin": "8",
+      "version_source": "--version",
+      "version_pattern": "curl (\\d+\\.\\d+)",
+      "description": "Transfer data from or to a server",
+      "ops": [
+        {
+          "op_name": "_main",
+          "permission_class": "write",
+          "description": "Transfer data from or to a URL",
+          "args": [
+            {"name": "url", "type": "str", "required": true, "description": "URL to fetch", "default": null},
+            {"name": "output", "type": "str", "required": false, "description": "Write output to file (-o)", "default": null},
+            {"name": "location", "type": "bool", "required": false, "description": "Follow redirects (-L)", "default": false},
+            {"name": "silent", "type": "bool", "required": false, "description": "Silent mode (-s)", "default": false},
+            {"name": "insecure", "type": "bool", "required": false, "description": "Allow insecure server connections (-k)", "default": false},
+            {"name": "request", "type": "str", "required": false, "description": "HTTP method (-X)", "default": null},
+            {"name": "header", "type": "str", "required": false, "description": "Extra header to send (-H)", "default": null},
+            {"name": "data", "type": "str", "required": false, "description": "HTTP POST data (-d)", "default": null},
+            {"name": "user", "type": "str", "required": false, "description": "User credentials (-u)", "default": null},
+            {"name": "max_time", "type": "int", "required": false, "description": "Max time in seconds (-m)", "default": null}
+          ]
+        }
+      ]
+    }
+  }
+}

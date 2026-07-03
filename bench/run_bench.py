@@ -73,6 +73,12 @@ import core.tools.logs  # noqa: E402,F401
 
 CASES_DIR = Path(__file__).resolve().parent / "cases"
 
+# Phase 5 labeled intent+slot cases live in a SEPARATE directory so the frozen
+# default validity denominator (bench/cases/) is unchanged — these are the cases
+# authored to exercise decomposition's intent + slot layers and are scored via
+# the decomposed column, not folded into the native validity headline.
+LABELED_CASES_DIR = Path(__file__).resolve().parent / "cases_labeled"
+
 
 # --------------------------------------------------------------------------- #
 # Case + result types                                                          #
@@ -122,6 +128,15 @@ class CaseResult:
     # Whether the emitted call (if any) matched the case's expected tool +
     # arguments_contains subset. Informational only — NOT part of validity.
     intent_match: Optional[bool] = None
+    # --- Decomposed-strategy scoring column (Phase 5) ---------------------- #
+    # Populated ONLY when a decomposer is supplied to run(); None means the
+    # decomposed path was not scored for this case (no fabricated number).
+    #   decomposed_valid:        the DecomposedStrategy assembled >=1 ParsedCall.
+    #   decomposed_intent_match: that assembled call hit the case's expected
+    #                            tool + arguments_contains subset (the same
+    #                            subset check the native intent_match uses).
+    decomposed_valid: Optional[bool] = None
+    decomposed_intent_match: Optional[bool] = None
 
 
 @dataclass
@@ -165,12 +180,42 @@ class BenchReport:
     def english_held(self) -> int:
         return sum(1 for r in self.english_results if r.stayed_english)
 
+    # ---- decomposed-strategy column (Phase 5) ----
+    @property
+    def decomposed_scored(self) -> bool:
+        """True iff any action turn carried a decomposed score (a decomposer ran)."""
+        return any(
+            r.decomposed_valid is not None for r in self.action_results
+        )
+
+    @property
+    def decomposed_valid_action_turns(self) -> int:
+        return sum(
+            1 for r in self.action_results if r.decomposed_valid
+        )
+
+    @property
+    def decomposed_validity_rate(self) -> Optional[float]:
+        """decomposed-valid / total action turns, or None when not scored.
+
+        None (not 0.0) when no decomposer ran — the runner never fabricates a
+        rate for a path it did not exercise.
+        """
+        if not self.decomposed_scored:
+            return None
+        n = self.total_action_turns
+        if n == 0:
+            return None
+        return self.decomposed_valid_action_turns / n
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "label": self.label,
             "validity_rate": self.validity_rate,
             "valid_action_turns": self.valid_action_turns,
             "total_action_turns": self.total_action_turns,
+            "decomposed_validity_rate": self.decomposed_validity_rate,
+            "decomposed_valid_action_turns": self.decomposed_valid_action_turns,
             "english_held": self.english_held,
             "english_total": len(self.english_results),
             "results": [
@@ -181,6 +226,8 @@ class BenchReport:
                     "valid": r.valid,
                     "stayed_english": r.stayed_english,
                     "intent_match": r.intent_match,
+                    "decomposed_valid": r.decomposed_valid,
+                    "decomposed_intent_match": r.decomposed_intent_match,
                     "miss_reasons": r.miss_reasons,
                 }
                 for r in self.results
@@ -200,6 +247,12 @@ class _AssembledLike(Protocol):
 # A responder turns (case, messages, tools) into an assembled model response.
 Responder = Callable[[BenchCase, list[dict], list[dict]], _AssembledLike]
 
+# A decomposer turns a case into the list of ParsedCalls the DecomposedStrategy
+# would produce for it (Phase 5 decomposed scoring column). It returns the SAME
+# ParsedCall objects the native path returns — the runner scores them with the
+# SAME predicates, so the two strategies are directly comparable.
+Decomposer = Callable[[BenchCase], list]
+
 
 # --------------------------------------------------------------------------- #
 # Case loading                                                                 #
@@ -207,6 +260,23 @@ Responder = Callable[[BenchCase, list[dict], list[dict]], _AssembledLike]
 
 def load_cases(cases_dir: Path = CASES_DIR) -> list[BenchCase]:
     """Load every cases/*.json into a sorted list of BenchCase."""
+    cases: list[BenchCase] = []
+    for path in sorted(cases_dir.glob("*.json")):
+        with path.open("r", encoding="utf-8") as fh:
+            cases.append(BenchCase.from_dict(json.load(fh)))
+    return cases
+
+
+def load_labeled_cases(cases_dir: Path = LABELED_CASES_DIR) -> list[BenchCase]:
+    """Load the Phase-5 labeled intent+slot cases (bench/cases_labeled/*.json).
+
+    Returns [] when the directory is absent so callers never crash. These cases
+    are scored through the decomposed column (build_decomposer) to demonstrate
+    the intent + slot layers on hard/natural phrasings, WITHOUT perturbing the
+    frozen default validity denominator in bench/cases/.
+    """
+    if not cases_dir.exists():
+        return []
     cases: list[BenchCase] = []
     for path in sorted(cases_dir.glob("*.json")):
         with path.open("r", encoding="utf-8") as fh:
@@ -311,12 +381,21 @@ class BenchRunner:
         *,
         label: str = "run",
         repeats: int = 1,
+        decomposer: Optional["Decomposer"] = None,
     ) -> BenchReport:
         """Run every case ``repeats`` times through ``responder`` and score.
 
         ``repeats`` > 1 supports the README's "run each case M times
         (temperature-varied) to get a stable rate" — every repeat is an
         independent scored turn in the report.
+
+        ``decomposer`` (Phase 5, OPTIONAL): when supplied, EACH action turn is
+        ALSO scored through the DecomposedStrategy — the runner records whether
+        decomposition assembled a valid ParsedCall and whether it hit the
+        expected intent. This is the decomposed scoring COLUMN. It NEVER changes
+        the native validity number; it is measured side-by-side so the two
+        strategies are comparable on the SAME labeled cases. Absent -> the
+        column stays None (no fabricated number).
         """
         report = BenchReport(label=label)
         for case in cases:
@@ -324,8 +403,32 @@ class BenchRunner:
             messages = self._messages_for(case)
             for _ in range(max(1, repeats)):
                 response = responder(case, messages, tools)
-                report.results.append(self.score_one(case, response))
+                result = self.score_one(case, response)
+                if decomposer is not None and case.is_action:
+                    self._score_decomposed(case, decomposer, result)
+                report.results.append(result)
         return report
+
+    def _score_decomposed(
+        self, case: BenchCase, decomposer: "Decomposer", result: CaseResult
+    ) -> None:
+        """Populate the decomposed column on ``result`` for one action case.
+
+        ``decomposer`` returns the list of ParsedCalls the DecomposedStrategy
+        would hand to the (unchanged) gate/dispatch spine for this case. We score
+        VALID = assembled >=1 call, and intent_match via the SAME subset check
+        the native path uses. A decomposer that raises degrades to
+        decomposed_valid=False (an honest miss), never a crash.
+        """
+        try:
+            calls = decomposer(case)
+        except Exception:  # noqa: BLE001 — a decomposition fault is a MISS, not a crash
+            calls = []
+        result.decomposed_valid = bool(calls)
+        if calls:
+            result.decomposed_intent_match = _intent_matches(case, calls[0])
+        else:
+            result.decomposed_intent_match = False
 
 
 # --------------------------------------------------------------------------- #
@@ -383,6 +486,56 @@ def recorded_responder(recordings: dict[str, dict]) -> Responder:
     return _respond
 
 
+def build_decomposer(
+    registry=None,
+    *,
+    embedder=None,
+    responder=None,
+) -> Decomposer:
+    """Build a decomposer over the DecomposedStrategy (Phase 5 scoring column).
+
+    The returned callable runs intent -> slots -> assembler for a case and
+    returns the resulting ``list[ParsedCall]`` — WITHOUT dispatching anything
+    (the strategy has no executor; scoring only inspects the assembled calls).
+
+    Backends (Assumption A3): pass ``embedder`` for the retrieval backend (a
+    dev-host stub embedder makes this fully offline-testable), or ``responder``
+    for the narrow model-call backend. The slot layer uses ``responder`` for
+    fuzzy slots; deterministic slots resolve from the case's system_context with
+    no model call. With neither backend the strategy returns NoConfidentMatch and
+    every decomposed score is an honest miss.
+
+    I1: the model-call path only ever uses the injected responder (localhost
+    Ollama in a live run); no egress is introduced here.
+    """
+    from core.agent.pipeline.strategy import DecomposedStrategy
+    from core.agent.router import Router
+
+    reg = registry if registry is not None else default_registry
+    strategy = DecomposedStrategy(reg, embedder=embedder, max_workers=1)
+    router = Router(reg)
+
+    # The DecomposedStrategy expects a bare responder(messages, tools); adapt the
+    # case-aware bench Responder into that shape when one is supplied.
+    def _bare_responder(messages, tools):
+        return responder(None, messages, tools) if responder is not None else None
+
+    bare = _bare_responder if responder is not None else None
+
+    def _decompose(case: BenchCase) -> list:
+        result = strategy.propose(
+            case.user,
+            case.system_context,
+            [],
+            [],
+            bare,
+            router,
+        )
+        return result.calls
+
+    return _decompose
+
+
 def ollama_responder(config) -> Responder:
     """Build a responder backed by a LIVE local Ollama client (I1).
 
@@ -425,6 +578,15 @@ def format_report(report: BenchReport, *, target: float = 0.995) -> str:
             f"  validity: {rate * 100:.1f}%  "
             f"({report.valid_action_turns}/{report.total_action_turns} action turns)  "
             f"[target {target * 100:.1f}% — {verdict}]"
+        )
+    # Decomposed-strategy column (Phase 5): shown ONLY when a decomposer ran, so
+    # a native-only run reads exactly as before.
+    d_rate = report.decomposed_validity_rate
+    if d_rate is not None:
+        lines.append(
+            f"  decomposed validity: {d_rate * 100:.1f}%  "
+            f"({report.decomposed_valid_action_turns}/{report.total_action_turns} "
+            "action turns)"
         )
     lines.append(
         f"  english controls held: {report.english_held}/{len(report.english_results)}"
@@ -471,9 +633,21 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--label", default=None)
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--json", action="store_true", help="Emit JSON report.")
+    parser.add_argument(
+        "--decomposed",
+        action="store_true",
+        help="Also score the decomposed strategy side-by-side (Phase 5 column). "
+             "In a --live run it uses the same local Ollama responder; the "
+             "offline/recorded path has no model, so decomposition is scored "
+             "only when --live is set.",
+    )
     args = parser.parse_args(argv)
 
     cases = load_cases()
+    # When scoring decomposition, also include the labeled intent+slot set so the
+    # decomposed column exercises the hard/natural phrasings it was authored for.
+    if args.decomposed:
+        cases = cases + load_labeled_cases()
     runner = BenchRunner()
 
     if args.recordings:
@@ -500,7 +674,24 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         return 2
 
-    report = runner.run(cases, responder, label=label, repeats=args.repeats)
+    decomposer = None
+    if args.decomposed:
+        if args.live:
+            # Live decomposition reuses the SAME localhost responder (I1).
+            decomposer = build_decomposer(responder=responder)
+        else:
+            # Offline: no model to drive intent/slot workers. Deterministic-only
+            # decomposition would score every fuzzy case a miss and mislead; be
+            # honest and skip the column rather than fabricate a low number.
+            print(
+                "--decomposed needs a model for intent/slot extraction; skipping "
+                "the decomposed column on the offline path (pass --live).",
+                file=sys.stderr,
+            )
+
+    report = runner.run(
+        cases, responder, label=label, repeats=args.repeats, decomposer=decomposer
+    )
 
     if args.json:
         print(json.dumps(report.to_dict(), indent=2))
