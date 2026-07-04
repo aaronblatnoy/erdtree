@@ -12,6 +12,7 @@ venv/
 training/data/
 rag/index/
 data/
+finetune/data/
 
 # Build artifacts
 dist/
