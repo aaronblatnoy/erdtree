@@ -70,6 +70,52 @@ try:
 except Exception:            # noqa: BLE001 — docs is optional; absence must never crash
     pass
 
+# Phase 13 — 44 additional tools (self-register on import).
+import core.tools.aide            # noqa: F401
+import core.tools.at              # noqa: F401
+import core.tools.audit           # noqa: F401
+import core.tools.bond            # noqa: F401
+import core.tools.buildah         # noqa: F401
+import core.tools.chrony          # noqa: F401
+import core.tools.cron            # noqa: F401
+import core.tools.crypto_policies  # noqa: F401
+import core.tools.dnf_modules     # noqa: F401
+import core.tools.dns             # noqa: F401
+import core.tools.fapolicyd       # noqa: F401
+import core.tools.grub            # noqa: F401
+import core.tools.hostname        # noqa: F401
+import core.tools.httpd           # noqa: F401
+import core.tools.kernel_modules  # noqa: F401
+import core.tools.locale          # noqa: F401
+import core.tools.lvm             # noqa: F401
+import core.tools.mariadb         # noqa: F401
+import core.tools.nfs             # noqa: F401
+import core.tools.nftables        # noqa: F401
+import core.tools.nginx           # noqa: F401
+import core.tools.nmcli           # noqa: F401
+import core.tools.pam             # noqa: F401
+import core.tools.perf            # noqa: F401
+import core.tools.performance     # noqa: F401
+import core.tools.podman          # noqa: F401
+import core.tools.postgresql      # noqa: F401
+import core.tools.quota           # noqa: F401
+import core.tools.restic          # noqa: F401
+import core.tools.routing         # noqa: F401
+import core.tools.rpm             # noqa: F401
+import core.tools.rsync           # noqa: F401
+import core.tools.samba           # noqa: F401
+import core.tools.selinux         # noqa: F401
+import core.tools.sosreport       # noqa: F401
+import core.tools.ssh_keys        # noqa: F401
+import core.tools.sssd            # noqa: F401
+import core.tools.stratis         # noqa: F401
+import core.tools.subscription    # noqa: F401
+import core.tools.sysctl          # noqa: F401
+import core.tools.systemd_timers  # noqa: F401
+import core.tools.tar             # noqa: F401
+import core.tools.tuned           # noqa: F401
+import core.tools.virsh           # noqa: F401
+
 # ---------------------------------------------------------------------------
 # 3. Re-export router utilities.
 # ---------------------------------------------------------------------------
@@ -122,8 +168,8 @@ from core.agent.permissions import OpClass  # noqa: E402
 #    Update the count here when core/ gains a new tool.
 # ---------------------------------------------------------------------------
 TOOL_NAMES: list[str] = sorted(registry.list_tools())
-assert len(TOOL_NAMES) == 11, (
-    f"Expected 11 registered tools, got {len(TOOL_NAMES)}: {TOOL_NAMES}\n"
+assert len(TOOL_NAMES) == 55, (
+    f"Expected 55 registered tools, got {len(TOOL_NAMES)}: {TOOL_NAMES}\n"
     "Did a tool fail to import?  Check the side-effect imports above and "
     "core/agent/main.py's registration block for divergence."
 )

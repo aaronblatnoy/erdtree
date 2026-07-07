@@ -1,0 +1,796 @@
+=====================================================================
+BUILDOUT PHASE PLAN: Complete RHEL 9 Sysadmin Tool Surface (core/tools/)
+Generated: 2026-07-04
+Scope: Implement ~44 new RHEL-9 sysadmin tools in core/tools/ (plus their
+       finetune scenario + simulator + test slices), extend the permission
+       classifier so new destructive verbs gate correctly, and wire it all
+       into the registry — without rebuilding the 11 existing tools.
+=====================================================================
+
+## 0. CONTEXT & GOALS
+
+Problem statement
+  Erdtree ships with 11 registered tools (services, packages, logs, network,
+  firewall, users, disk, processes, hardware, files, docs). Radagon (the
+  data-center tier, the core business) needs the full RHEL 9 sysadmin surface
+  — SELinux, LVM/stratis/NFS, containers, scheduling, subscription-manager,
+  compliance (sssd/pam/aide/fapolicyd), web/db services, backup. This plan
+  builds ~44 new tool modules, each following the frozen ToolSpec contract,
+  each with its finetune scenario corpus + Rocky-9 output simulator + test,
+  and extends the safety classifier so the new destructive verbs (virsh
+  undefine, stratis destroy, podman rm, pvremove, etc.) gate as DESTRUCTIVE.
+
+Success criteria (measurable)
+  - ~44 new modules in core/tools/, each self-registering, each passing its
+    own tests/test_tools_<name>.py.
+  - registry.list_tools() returns 11 + ~44 = ~55 unique names, no dup-name
+    ValueError at import.
+  - finetune/simulate/__init__.py import-time COMPLETENESS ASSERT passes for
+    every (tool, op) pair in the live registry.
+  - Each new tool has >= 40 scenarios; finetune/validate.py exits 0 (MISS rate
+    <= 0.5%, zero I2 violations, ALL tools covered — threshold bumped from 11).
+  - permissions.classify() returns DESTRUCTIVE (-> CONFIRM_TYPED, REFUSE when
+    non-interactive) for every new data-loss / lockout verb enumerated in the
+    Phase 0 manifest. Verified by an adversarial consensus review.
+  - Full pytest suite green; test_output_hygiene / I2 scan clean across all new
+    modules; no network import anywhere in core/tools/ (I1).
+
+Non-goals (explicitly out of scope)
+  - Rebuilding or refactoring the 11 existing tools (services, packages, logs,
+    network, firewall, users, disk, processes, hardware, files, docs).
+  - Changing the frozen shared contract in core/tools/__init__.py (ToolSpec,
+    OpSpec, ArgSpec, ToolResult, ToolRegistry, run_subprocess) — ADDITIVE ONLY.
+  - Changing repl.py's synthesize_command() rendering or the router.
+  - Live end-to-end runs against Ollama/mossad (DEFERRED-TO-MOSSAD, as today).
+  - Fine-tuning the model itself (this produces the training-data slices; the
+    actual SFT run in finetune/ is a separate initiative).
+  - Any GUI, any cloud/network feature (violates I1).
+
+Assumptions made
+  - A1: The vertical-slice unit is the right granularity — one agent produces
+    ALL of {core/tools/<name>.py, finetune/scenarios/<name>.py,
+    finetune/simulate/<name>.py, tests/test_tools_<name>.py} for one tool,
+    then a later serialized phase wires the aggregators. Rationale: op names +
+    arg schemas are freshest in the authoring agent's context (INV-schema-sync
+    is trivially satisfied), and new-file creation is collision-free.
+  - A2: OpSpec.permission_class is ADVISORY (documented in disk.py/firewall.py
+    headers); the AUTHORITATIVE gate is permissions.classify() over the faithful
+    command line. Therefore correctness of gating for NEW verbs REQUIRES the
+    Phase 1 classifier extension — the per-op class alone is not sufficient.
+  - A3: The aggregators (finetune/scenarios/__init__.py, finetune/simulate/
+    __init__.py) keep their EXPLICIT per-tool imports (no glob/auto-discovery)
+    — the codebase deliberately avoids "plugin magic" (see ToolRegistry
+    docstring). We honor that: wiring is explicit and serialized.
+  - A4: Tool-name uniqueness — new names (nmcli, nftables, dns, routing, bond,
+    lvm, stratis, ...) do NOT collide with the 11 existing names. Functional
+    OVERLAP with existing network/firewall/disk tools is acceptable (different
+    registry name = no collision), but Phase 0 produces an overlap map so we
+    don't duplicate behavior confusingly.
+  - A5: Target count is ~44 tools (enumerated below); the request said "35-40".
+    If scope must shrink, the Phase→tool table is the cut list.
+
+## 1. ARCHITECTURE OVERVIEW
+
+How this fits the existing system
+  Each tool is a leaf that self-registers into the module-level `registry`
+  singleton (core/tools/__init__.py) on import. main.py imports each tool for
+  its register side-effect; the router dispatches (tool, op, args); the REPL
+  renders the faithful command line; permissions.classify() gates it; audit
+  logs it. New tools slot into this UNCHANGED spine — they only ADD leaves.
+
+  The one spine change is in permissions.py: the classifier's destructive
+  taxonomy must learn the new verbs so the ADVISORY OpSpec class and the
+  AUTHORITATIVE gate agree. This is the single load-bearing, cross-cutting edit.
+
+Affected services
+  - core/tools/*      (~44 new leaf modules)   — the bulk of the work
+  - core/agent/permissions.py                   — destructive-taxonomy extension
+  - core/agent/main.py                          — import/register wiring
+  - finetune/scenarios/*, finetune/simulate/*   — training-data slices per tool
+  - finetune/scenarios/__init__.py, simulate/__init__.py, coreimports.py,
+    validate.py                                 — aggregator + threshold wiring
+  - tests/test_tools_*                          — per-tool tests
+
+Data flow (unchanged spine; new leaves)
+  English request
+    -> collector/context -> prompt -> Ollama (localhost, I1)
+    -> router: (tool, op, args)                         [NEW tools resolvable here]
+    -> repl.synthesize_command() renders faithful argv  [NEW argv shapes rendered]
+    -> permissions.classify(argv)                       [EXTENDED taxonomy, Phase 1]
+       READ->ALLOW | WRITE->CONFIRM | DESTRUCTIVE->CONFIRM_TYPED/REFUSE
+    -> registry.dispatch -> tool.execute(op,args)       [NEW leaves execute here]
+    -> run_subprocess(argv) (local binary only, I1)
+    -> ToolResult -> audit.jsonl (I4) -> user
+
+Invariants this plan MUST preserve
+  I1  No network. Tools shell out via run_subprocess to LOCAL binaries only;
+      import NO python libraries that open sockets (no requests, no docker SDK,
+      no psycopg — use the psql/mysql/podman CLIs).
+  I2  No AI/LLM/model/agent language in ANY user-facing string (every ToolSpec/
+      OpSpec description, every ToolResult.summary, every simulator summary).
+      test_output_hygiene + assert_no_ai_language enforce this.
+  I3  Tools NEVER call permissions.classify(); the caller resolves the gate.
+  I4  Tools NEVER write audit records; the caller writes them.
+  I6  Zero tier/product/model names anywhere in tool files.
+  I9  execute() NEVER raises — every failure degrades to a well-formed
+      ToolResult (see disk.py header).
+  SELinux-aware: surface an AVC hint suffix when stderr looks like a denial
+  (reuse the _SELINUX_HINT_RE / _maybe_selinux_hint pattern from services.py).
+  Rocky 9: dnf not apt; systemd; SELinux enforcing; pin no ':latest'.
+
+## 2. AFFECTED SURFACE AREA
+
+Files to CREATE (per tool <name>, x ~44)
+  - core/tools/<name>.py
+  - finetune/scenarios/<name>.py            (>= 40 scenarios)
+  - finetune/simulate/<name>.py             (simulate_<name>(op,args,ctx)->dict)
+  - tests/test_tools_<name>.py
+
+Files to MODIFY (SHARED — serialized wiring, Phase 13)
+  - core/agent/main.py                      — add `import core.tools.<name>` per tool
+  - finetune/scenarios/__init__.py          — add `from . import <name>` per tool
+  - finetune/simulate/__init__.py           — add import + dispatch entry per tool
+  - finetune/coreimports.py                 — TOOL_NAMES if hardcoded (verify; it
+                                              likely derives from registry — confirm)
+  - finetune/validate.py                    — bump "all 11 tools covered" gate to
+                                              the new total (and any per-tool table)
+  - core/agent/permissions.py               — destructive-taxonomy extension (Phase 1)
+
+Migrations / env / deps
+  - None. No DB, no schema, no new env vars, no new python dependencies (I1 —
+    CLI wrappers only). If any tool is tempted to `pip install` a client lib,
+    that is a bug: shell out to the vendor CLI instead.
+
+## 3. PHASES
+
+Legend for the per-tool tables: op (permission_class as ADVISORY OpSpec value;
+the Phase-1 classifier makes the destructive ones actually gate).
+
+-------------------------------------------------------------------------------
+### PHASE 0: Foundations — Slice Contract, Destructive-Verb Manifest, Overlap Map
+   Prerequisites: none
+   Deliverables:
+      - A written SLICE CONTRACT (checked into the plan's audit dir) that every
+        Phase 2-12 tool agent MUST follow: file set, ToolSpec shape, I1/I2/I3/
+        I4/I6/I9 checklist, SELinux hint snippet, run_subprocess usage, the
+        finetune scenario dataclass + live _pc() pattern, the simulator 4-key
+        dict contract, and the test skeleton.
+      - DESTRUCTIVE-VERB MANIFEST: for all ~44 tools, the exact argv verbs/flags
+        that are data-loss or lockout (e.g. `virsh undefine`, `virsh destroy`,
+        `stratis pool destroy`, `stratis filesystem destroy`, `podman rm -f`,
+        `podman rmi`, `pvremove`, `vgremove`, `lvremove`, `lvreduce`,
+        `nft flush ruleset`, `semanage ... -d`, `setsebool -P` on selinux
+        enforcement, `restic forget --prune`, `mysqladmin drop`, `dropdb`,
+        `exportfs -u`, `smbpasswd -x`, `realm leave`, `grubby --remove-kernel`,
+        `tuned-adm off`, `kernel_modules rmmod`, `sysctl` writes to critical
+        keys, `at -r`, `crontab -r`). This manifest is the INPUT to Phase 1 AND
+        the source of truth for each tool's OpSpec DESTRUCTIVE ops.
+      - OVERLAP MAP: read core/tools/network.py, firewall.py, disk.py and note
+        where new tools (nmcli/routing/dns/bond vs network; nftables vs firewall;
+        lvm/stratis/nfs/samba/quota vs disk) overlap, so agents don't duplicate
+        existing behavior or shadow an existing op semantics.
+   Steps:
+      1. Read core/tools/services.py, disk.py, firewall.py (canonical + the two
+         destructive/complex exemplars) and core/tools/__init__.py.
+      2. Read finetune/scenarios/services.py, finetune/simulate/services.py,
+         finetune/scenarios/__init__.py, finetune/simulate/__init__.py,
+         finetune/coreimports.py, finetune/validate.py.
+      3. Read core/agent/permissions.py fully; grep each new verb against it;
+         record which verbs are UNKNOWN (default-deny to WRITE) vs already
+         DESTRUCTIVE. (Pre-survey already found: setsebool/semanage/podman/
+         virsh/stratis/pvcreate/vgcreate/lvcreate/realm/chronyc/restic/buildah
+         are all UNKNOWN; lvremove/pvremove/vgremove/mkfs/nft-flush known.)
+      4. Confirm whether coreimports.TOOL_NAMES is derived from registry
+         (dynamic) or hardcoded — Phase 13 wiring depends on the answer.
+      5. Emit the three artifacts to runtime/audits/rhel-tools-complete/phase-0/.
+   Validation:
+      - The manifest lists >= 1 destructive verb for every tool that can lose
+        data or lock out access; each entry names verb+flags+reason.
+      - The overlap map names every (new-tool op, existing-tool op) collision.
+      - Slice contract compiles as a doc a fresh agent can follow with no
+        further questions.
+   Risks / Edge cases:
+      - Missing a destructive verb here => under-gated op ships. Mitigation:
+        Phase 1's consensus-verification-duo re-derives the manifest adversarially
+        and diffs against this one.
+   Subagent orchestration:
+      - Execution shape: [SINGLE]
+      - REQUIRED subagent_type: general-purpose
+      - REQUIRED model: opus  (whole-surface reasoning + the security manifest
+        that everything downstream depends on; a miss here cascades)
+      - Run in background: no (gates every later phase)
+      - Brief template:
+         "Execute Phase 0 of <PLAN_FILE_PATH>. Read Sections 1-3 and the files
+          listed in Phase 0 steps. Produce three artifacts in
+          runtime/audits/rhel-tools-complete/phase-0/: (1) SLICE-CONTRACT.md,
+          (2) DESTRUCTIVE-VERB-MANIFEST.md (verb+flags+reason per tool),
+          (3) OVERLAP-MAP.md (new-vs-existing op collisions). Do NOT write any
+          tool code. Validation: manifest covers every data-loss/lockout tool;
+          contract is self-sufficient. Print one-line summary and exit."
+
+-------------------------------------------------------------------------------
+### PHASE 1: Permission Classifier Taxonomy Extension (permissions.py) + Security Gate
+   Prerequisites: Phase 0 (destructive-verb manifest)
+   Deliverables:
+      - Extended destructive taxonomy in core/agent/permissions.py so every
+        manifest verb classifies as DESTRUCTIVE, plus WRITE recognition for the
+        new mutating verbs (so they don't sit at the default-deny floor with a
+        generic reason). Concretely: add to _DESTRUCTIVE_PROGRAMS (stratis-,
+        vgcreate no / pvcreate no — those are WRITE; but virsh/podman/semanage/
+        setsebool handled with argv-aware sub-verb logic in _classify_argv),
+        extend _classify_argv with per-verb blocks (virsh destroy/undefine,
+        podman rm -f/rmi, stratis ... destroy, restic forget --prune, dropdb,
+        realm leave, grubby --remove-kernel, at -r, crontab -r), and extend
+        _WRITE_PATTERNS for the benign mutators (nmcli/podman run/semanage add).
+      - New unit tests in tests/test_permissions.py covering EACH new verb at
+        the DESTRUCTIVE boundary AND its safe read/write siblings (e.g. `podman
+        ps` READ, `podman run` WRITE, `podman rm -f` DESTRUCTIVE).
+      - Adversarial security review verdict (consensus-verification-duo).
+   Steps:
+      1. For each manifest verb, add the narrowest argv-aware rule in
+         _classify_argv that ESCALATES to DESTRUCTIVE (mirror the existing
+         style: case-sensitive flags where it matters, e.g. `-f`/`--force`).
+      2. Add WRITE recognition for the mutating-but-safe verbs so they read as
+         "recognized state-changing operation" not "unrecognized ... for safety".
+      3. Preserve default-deny: anything unrecognized still floors at WRITE.
+      4. Write exhaustive boundary tests (READ/WRITE/DESTRUCTIVE per verb, plus
+         non-interactive REFUSE for destructive).
+      5. Hand the diff to a consensus-verification-duo to adversarially hunt for
+         MISSED destructive shapes and OVER-gating regressions of existing verbs.
+   Validation:
+      - New test_permissions.py cases all green; existing permission tests still
+        green (no regression to the 11 tools' gating).
+      - classify("<verb> ...", ExecContext(interactive=False)) == REFUSE for
+        every destructive manifest verb.
+      - Duo returns consensus APPROVE with zero unresolved missed-verb findings.
+   Risks / Edge cases:
+      - Over-gating a benign read (e.g. `virsh list`) to WRITE annoys users but
+        is safe; UNDER-gating a destructive verb is catastrophic on a live box.
+        Bias toward escalation, exactly as the file's own comments instruct.
+      - This file is edited ONLY here — do NOT let Phase 13 or any tool slice
+        touch permissions.py (shared-file serialization).
+   Subagent orchestration:
+      - Execution shape: [SEQUENTIAL — depends on Phase 0]. Runs CONCURRENTLY
+        with the tool-building waves (Phases 2-12) — tool files don't import the
+        classifier, so there is no code coupling; only the final acceptance gate
+        (Phase 14) depends on Phase 1 being merged.
+      - REQUIRED subagent_type: general-purpose for authoring; then
+        consensus-verification-duo for the security gate (adversarial dialectic
+        is the whole point — inline self-review is FORBIDDEN here).
+      - REQUIRED model: opus (authoring — correctness-critical, one missed verb
+        cascades to data loss); consensus-verification-duo also on opus.
+      - Run in background: yes (multi-minute; other waves proceed in parallel).
+      - Brief template (authoring):
+         "Execute Phase 1 of <PLAN_FILE_PATH>. Read
+          runtime/audits/rhel-tools-complete/phase-0/DESTRUCTIVE-VERB-MANIFEST.md
+          and core/agent/permissions.py in full. Touch ONLY permissions.py and
+          tests/test_permissions.py. For each manifest verb add the narrowest
+          argv-aware DESTRUCTIVE rule + boundary tests; preserve default-deny and
+          the existing 11 tools' gating. Validation: new+existing permission
+          tests green; non-interactive destructive == REFUSE. Produce the diff +
+          test output as evidence. Print one-line summary and exit."
+      - Brief template (gate): dispatch consensus-verification-duo AFTER
+         authoring: "Adversarially review the Phase 1 permissions.py diff of
+         <PLAN_FILE_PATH> against the DESTRUCTIVE-VERB-MANIFEST. Find missed
+         destructive shapes and over-gated regressions. Return APPROVE/BLOCK +
+         required fixes."
+
+-------------------------------------------------------------------------------
+### PHASE 2 (Category A): Security & SELinux tools  [Radagon top priority]
+   Prerequisites: Phase 0
+   Deliverables (4 tool slices):
+      - selinux        — sestatus(R), getsebool(R), getenforce(R), setenforce(W),
+                         setsebool(W; setsebool -P persist W), semanage fcontext/
+                         port/user list(R)/add(W)/delete(DESTRUCTIVE), restorecon(W),
+                         chcon(W), audit2allow(R)
+      - audit          — auditctl list(R)/status(R), auditctl add-rule(W)/delete(D),
+                         ausearch(R by-comm/by-key/by-time), aureport(R),
+                         auditd start(W)/stop(W)
+      - ssh_keys       — keygen(W), authorized_keys list(R)/add(W)/remove(D),
+                         known_hosts list(R)/remove(W), sshd_config audit(R)
+      - crypto_policies— get(R), list(R), set(W), fips-mode-setup status(R)/enable(W)
+   Steps: per SLICE CONTRACT — one agent per tool; create the 4 files; do NOT
+      edit aggregators. setenforce 0 already trips a DESTRUCTIVE pattern in the
+      classifier (SELinux disable) — keep that in mind for scenario labeling.
+   Validation: each tool's tests/test_tools_<name>.py passes in isolation
+      (import the module directly; registry.get('<name>') resolves; every op
+      has a simulator; every summary I2-clean).
+   Risks: semanage sub-commands are deep — keep ops coarse (fcontext/port/user
+      + verb) rather than exhaustive. setsebool without -P is runtime-only.
+   Subagent orchestration:
+      - Execution shape: [PARALLEL FANOUT OK — 4 siblings]
+      - REQUIRED subagent_type: general-purpose
+      - REQUIRED model: sonnet
+      - Run in background: yes
+      - Brief template:
+         "Execute your slice of Phase 2 (Category A) of <PLAN_FILE_PATH>: build
+          the '<TOOL>' tool. Read runtime/audits/rhel-tools-complete/phase-0/
+          SLICE-CONTRACT.md and core/tools/services.py as the canonical shape.
+          Create ONLY: core/tools/<TOOL>.py, finetune/scenarios/<TOOL>.py (>=40),
+          finetune/simulate/<TOOL>.py, tests/test_tools_<TOOL>.py. Ops+classes per
+          the Phase 2 table. Do NOT edit any __init__/main.py/validate.py.
+          Validation: pytest tests/test_tools_<TOOL>.py green; all summaries
+          I2-clean. Print one-line summary and exit."
+
+-------------------------------------------------------------------------------
+### PHASE 3 (Category B): Storage tools  [Radagon data-center critical]
+   Prerequisites: Phase 0 (read OVERLAP-MAP for disk.py overlap)
+   Deliverables (5 slices):
+      - lvm      — pvdisplay/vgdisplay/lvdisplay(R), pvcreate/vgcreate/lvcreate(W),
+                   lvextend/vgextend(W), pvremove/vgremove/lvremove/lvreduce(D)
+      - stratis  — pool list(R)/create(W)/destroy(D), filesystem list(R)/create(W)/
+                   snapshot(W)/destroy(D)
+      - nfs      — showmount(R), exportfs list(R)/add(W)/unexport(D), /etc/exports
+                   view(R), nfs-server start(W)/stop(W), mount client(W)
+      - samba    — smbd/nmbd status(R), testparm(R), smbpasswd add(W)/delete(D),
+                   net usershare list(R)/add(W)
+      - quota    — repquota(R), quota user(R), quotaon(W)/quotaoff(W),
+                   quotacheck(W), edquota(W)
+   Steps: per SLICE CONTRACT. LVM removals + stratis destroy MUST be DESTRUCTIVE
+      ops AND must be in the Phase 1 manifest (cross-check).
+   Validation: as Phase 2. Extra: confirm no op name shadows a disk.py op with
+      different semantics (per OVERLAP-MAP).
+   Risks: lvm overlaps disk.py's LVM handling if any — keep lvm the authoritative
+      LVM tool; do not re-expose disk.py device-format ops here.
+   Subagent orchestration:
+      - Execution shape: [PARALLEL FANOUT OK — 5 siblings]
+      - REQUIRED subagent_type: general-purpose ; REQUIRED model: sonnet
+      - Run in background: yes
+      - Brief template: as Phase 2, substituting Category B table + "read
+        OVERLAP-MAP.md; do not duplicate disk.py device ops."
+
+-------------------------------------------------------------------------------
+### PHASE 4 (Category C): Networking (enhanced) tools
+   Prerequisites: Phase 0 (read OVERLAP-MAP for network.py / firewall.py overlap)
+   Deliverables (5 slices):
+      - nmcli    — device status(R), connection show(R), connection add/modify/
+                   up/down(W), connection delete(D), wifi list(R)/connect(W),
+                   DNS configure(W)
+      - bond     — bond show(R), bond add(W)/modify(W), bond remove(D) (nmcli bond-
+                   slave management is its own domain)
+      - dns      — resolv.conf view(R), named/bind status(R), dig/nslookup/host(R),
+                   resolvectl flush-caches(W)
+      - routing  — ip route show(R), ip route add/del(W), policy rule show(R)/add(W)
+      - nftables — nft list ruleset(R), add rule(W), delete rule(W), flush ruleset(D)
+   Steps: per SLICE CONTRACT. nft flush ruleset is already DESTRUCTIVE in the
+      classifier; `ip link set down` is already DESTRUCTIVE — label scenarios
+      accordingly.
+   Validation: as Phase 2. Confirm no registry name collision with 'network' or
+      'firewall' (different names — OK) and no op semantics shadow.
+   Risks: HIGH overlap with existing network.py — OVERLAP-MAP governs the split.
+      Do NOT re-implement what network.py already does under a new name gratis;
+      nmcli is the connection-profile tool, network.py stays as-is.
+   Subagent orchestration:
+      - Execution shape: [PARALLEL FANOUT OK — 5 siblings]
+      - REQUIRED subagent_type: general-purpose ; REQUIRED model: sonnet
+      - Run in background: yes
+      - Brief template: as Phase 2 with Category C table + OVERLAP-MAP note.
+
+-------------------------------------------------------------------------------
+### PHASE 5 (Category D): Containers & Virtualization tools
+   Prerequisites: Phase 0
+   Deliverables (3 slices):
+      - podman   — ps(R), images(R), inspect(R), logs(R), pull(W), run(W), stop(W),
+                   exec(W), build(W), push(W), rm(D on -f), rmi(D)
+      - buildah  — images(R), from(W), copy(W), run(W), commit(W), push(W),
+                   bud/build(W), rm(D)
+      - virsh    — list(R), dominfo(R), start(W), shutdown(W), define(W),
+                   destroy(D), undefine(D), pool list(R)/define(W)/destroy(D)
+   Steps: per SLICE CONTRACT. podman is rootless by default on RHEL 9 — no sudo
+      assumption in summaries. virsh destroy/undefine + podman rm -f/rmi are
+      DESTRUCTIVE and MUST be in the Phase 1 manifest (cross-check).
+   Validation: as Phase 2.
+   Risks: podman has a huge op surface — keep to the enumerated ops; do not add
+      network/volume subcommands in v1.
+   Subagent orchestration:
+      - Execution shape: [PARALLEL FANOUT OK — 3 siblings]
+      - REQUIRED subagent_type: general-purpose ; REQUIRED model: sonnet
+      - Run in background: yes
+      - Brief template: as Phase 2 with Category D table.
+
+-------------------------------------------------------------------------------
+### PHASE 6 (Category E): Scheduling & Time tools
+   Prerequisites: Phase 0
+   Deliverables (4 slices):
+      - cron           — list(R crontab -l), list-all(R), edit(W), remove(D crontab -r),
+                         cron.d view(R)/add(W)
+      - systemd_timers — list-timers(R), timer show(R), create(W), enable(W),
+                         disable(W), systemd-run oneshot(W)
+      - chrony         — chronyc tracking(R)/sources(R), chronyd status(R),
+                         makestep(W), chrony.conf view(R)/edit(W)
+      - at             — atq(R), at schedule(W), atrm(D)
+   Steps: per SLICE CONTRACT. crontab -r and atrm are DESTRUCTIVE (irreversible
+      job loss) — cross-check Phase 1 manifest.
+   Validation: as Phase 2.
+   Risks: none notable — small, well-bounded tools.
+   Subagent orchestration:
+      - Execution shape: [PARALLEL FANOUT OK — 4 siblings]
+      - REQUIRED subagent_type: general-purpose ; REQUIRED model: sonnet
+      - Run in background: yes
+      - Brief template: as Phase 2 with Category E table.
+
+-------------------------------------------------------------------------------
+### PHASE 7 (Category F): System Configuration tools
+   Prerequisites: Phase 0
+   Deliverables (6 slices):
+      - sysctl         — list(R sysctl -a), get(R), set(W), persist(W /etc/sysctl.d)
+      - kernel_modules — lsmod(R), modinfo(R), modprobe(W), rmmod(D), modules-load.d(W)
+      - grub           — grubby --info(R)/--default-kernel(R), set-default(W),
+                         kernel-args add/remove(W), grub2-mkconfig(D), grub password(W)
+      - tuned          — tuned-adm list(R)/active(R)/recommend(R), profile(W), off(W)
+      - locale         — localectl status(R), set-locale(W), set-keymap(W),
+                         timedatectl status(R)/set-timezone(W)/set-ntp(W)
+      - hostname       — hostnamectl status(R), set-hostname(W), /etc/hosts view(R)/edit(W)
+   Steps: per SLICE CONTRACT. grub2-mkconfig is already DESTRUCTIVE in classifier;
+      rmmod of a live module can wedge a box — DESTRUCTIVE, cross-check manifest.
+   Validation: as Phase 2.
+   Risks: grub op set is fiddly — grubby is the RHEL-preferred front-end; keep
+      grub2-mkconfig behind DESTRUCTIVE.
+   Subagent orchestration:
+      - Execution shape: [PARALLEL FANOUT OK — 6 siblings]
+      - REQUIRED subagent_type: general-purpose ; REQUIRED model: sonnet
+      - Run in background: yes
+      - Brief template: as Phase 2 with Category F table.
+
+-------------------------------------------------------------------------------
+### PHASE 8 (Category G): Package & Subscription tools
+   Prerequisites: Phase 0
+   Deliverables (3 slices):
+      - dnf_modules   — module list(R)/info(R), enable(W)/disable(W), install(W),
+                        reset(W)
+      - rpm           — -qi/-ql/-qf/-Va/--checksig(R), -ivh install(W),
+                        rpm2cpio(R), (removal deliberately absent — that's dnf's D)
+      - subscription  — status(R), list(R), register(W), unregister(D),
+                        repos enable/disable(W)
+   Steps: per SLICE CONTRACT. subscription-manager unregister is a lockout of
+      entitlements — DESTRUCTIVE. dnf remove stays owned by the EXISTING packages
+      tool; do not add a remove op here.
+   Validation: as Phase 2.
+   Risks: rpm -Va can be slow — set a generous run_subprocess timeout note.
+   Subagent orchestration:
+      - Execution shape: [PARALLEL FANOUT OK — 3 siblings]
+      - REQUIRED subagent_type: general-purpose ; REQUIRED model: sonnet
+      - Run in background: yes
+      - Brief template: as Phase 2 with Category G table.
+
+-------------------------------------------------------------------------------
+### PHASE 9 (Category H): Performance & Monitoring tools
+   Prerequisites: Phase 0
+   Deliverables (3 slices):
+      - performance — sar(R), iostat(R), vmstat(R), mpstat(R), uptime(R), load(R)
+      - perf        — perf stat(R), perf top(R), perf record(W writes perf.data)
+      - sosreport   — sos report generate(W), sos info(R)
+   Steps: per SLICE CONTRACT. All essentially READ except perf record / sos
+      report which WRITE a file. None DESTRUCTIVE.
+   Validation: as Phase 2.
+   Risks: these binaries (sysstat, perf, sos) may be absent on dev host — tests
+      MUST patch run_subprocess (per SLICE CONTRACT), never launch real procs.
+   Subagent orchestration:
+      - Execution shape: [PARALLEL FANOUT OK — 3 siblings]
+      - REQUIRED subagent_type: general-purpose ; REQUIRED model: sonnet
+      - Run in background: yes
+      - Brief template: as Phase 2 with Category H table.
+
+-------------------------------------------------------------------------------
+### PHASE 10 (Category I): Web & Database Service tools
+   Prerequisites: Phase 0
+   Deliverables (4 slices):
+      - httpd      — apachectl status(R)/configtest(R), start/stop/restart(W),
+                     vhost list(R), mod_status(R)
+      - nginx      — nginx -t(R), status(R), start/stop/restart/reload(W)
+      - postgresql — pg status(R), psql query(R; wrap SELECT-style read),
+                     createdb(W)/createuser(W)/pg_dump(R->file W), dropdb(D)
+      - mariadb    — mysqladmin status(R), mysql query(R), mysqldump(W),
+                     user grant(W), drop database(D)
+   Steps: per SLICE CONTRACT. DB tools shell out to psql/mysql CLIs — NO python
+      db driver (I1). dropdb / drop database are DESTRUCTIVE — cross-check
+      manifest. A raw `psql -c` query is user-supplied SQL; classify the wrapper
+      command, and keep the query op READ-labeled but note the gate is resolved
+      on the rendered argv (a DROP inside -c is the user's responsibility; the
+      OpSpec class is advisory — document this clearly).
+   Validation: as Phase 2.
+   Risks: SQL-injection-style destructive payloads inside a "read" query op —
+      document that the advisory class does not inspect SQL; escalate the query
+      op to WRITE if any doubt (bias to CONFIRM).
+   Subagent orchestration:
+      - Execution shape: [PARALLEL FANOUT OK — 4 siblings]
+      - REQUIRED subagent_type: general-purpose ; REQUIRED model: sonnet
+      - Run in background: yes
+      - Brief template: as Phase 2 with Category I table + the SQL-gating note.
+
+-------------------------------------------------------------------------------
+### PHASE 11 (Category J): Backup & Archive tools
+   Prerequisites: Phase 0
+   Deliverables (3 slices):
+      - rsync   — dry-run(R), sync(W), sync with --delete(D), progress(R)
+      - tar     — list(R), create(W), extract(W), verify(R), gz/bz2/xz variants(W)
+      - restic  — snapshots(R), backup(W), restore(W), forget(W),
+                  forget --prune(D)
+   Steps: per SLICE CONTRACT. rsync --delete and restic forget --prune are
+      DESTRUCTIVE — cross-check manifest. restic is EPEL on RHEL — tool assumes
+      the binary present; missing binary degrades to a clean ToolResult (127).
+   Validation: as Phase 2.
+   Risks: tar extract over an existing tree can clobber — keep extract WRITE
+      (CONFIRM), not DESTRUCTIVE, matching the file-op norm.
+   Subagent orchestration:
+      - Execution shape: [PARALLEL FANOUT OK — 3 siblings]
+      - REQUIRED subagent_type: general-purpose ; REQUIRED model: sonnet
+      - Run in background: yes
+      - Brief template: as Phase 2 with Category J table.
+
+-------------------------------------------------------------------------------
+### PHASE 12 (Category K): Security Compliance tools
+   Prerequisites: Phase 0
+   Deliverables (4 slices):
+      - sssd      — status(R), id lookup(R), sss_cache flush(W), realm list(R)/
+                    join(W)/leave(D)
+      - pam       — pam.d audit(R), faillock status(R)/reset(W),
+                    pam-auth-update apply(W)
+      - aide      — aide --check(R), --init(W), --update(W), db status(R)
+      - fapolicyd — status(R), rules list(R), allow(W), deny(W), fapolicyd-cli
+                    update(W)
+   Steps: per SLICE CONTRACT. realm leave (leaves AD domain) is DESTRUCTIVE —
+      cross-check manifest. fapolicyd deny of a critical path can brick logins —
+      keep deny WRITE with a strong summary note (advisory), classifier stays
+      the authority.
+   Validation: as Phase 2.
+   Risks: these are auth-adjacent; over-cautious labeling is fine.
+   Subagent orchestration:
+      - Execution shape: [PARALLEL FANOUT OK — 4 siblings]
+      - REQUIRED subagent_type: general-purpose ; REQUIRED model: sonnet
+      - Run in background: yes
+      - Brief template: as Phase 2 with Category K table.
+
+-------------------------------------------------------------------------------
+### PHASE 13: Aggregator Wiring & Registration  [SERIALIZED — shared files]
+   Prerequisites: Phases 2-12 ALL complete (every slice's 4 files exist on disk)
+   Deliverables:
+      - core/agent/main.py — one `import core.tools.<name>  # noqa: E402,F401`
+        per new tool, in the existing imports block.
+      - finetune/scenarios/__init__.py — one `from . import <name>` per tool, and
+        inclusion in the aggregated ALL_SCENARIOS join.
+      - finetune/simulate/__init__.py — import + dispatch-table entry per tool so
+        the import-time COMPLETENESS ASSERT (every live (tool,op) has a simulator)
+        passes.
+      - finetune/coreimports.py — if TOOL_NAMES is hardcoded, extend it; if it
+        derives from registry, no change (Phase 0 step 4 recorded which).
+      - finetune/validate.py — bump the "all 11 tools covered" exit-0 gate to the
+        new total (~55) and any per-tool coverage table.
+   Steps:
+      1. Enumerate the new tool names from ls core/tools/ minus the 11 existing.
+      2. Add imports/registrations to each shared file in ONE agent pass (no
+         concurrency — these are the collision files).
+      3. Run `python -c "import finetune.simulate"` — the completeness assert
+         must pass (proves every op has a simulator).
+      4. Run `python -c "import core.agent.main"` — proves every tool registers
+         with no dup-name ValueError.
+   Validation:
+      - registry.list_tools() length == 11 + new count, all unique.
+      - finetune.simulate + finetune.scenarios import cleanly (asserts pass).
+      - No ImportError, no duplicate-registration ValueError.
+   Risks / Edge cases:
+      - Edit-tool collisions if parallelized — this is why it is SINGLE/serialized
+        (see the shared-file-serialization rule). If a tool slice is missing a
+        simulator op, the completeness assert fails here — bounce back to that
+        slice's agent, don't patch around it.
+   Subagent orchestration:
+      - Execution shape: [SEQUENTIAL — depends on Phases 2-12]
+      - REQUIRED subagent_type: general-purpose
+      - REQUIRED model: sonnet (mechanical wiring, but assert-driven — escalate
+        to opus only if the completeness assert fails in a non-obvious way)
+      - Run in background: no (its result gates Phase 14)
+      - Brief template:
+         "Execute Phase 13 of <PLAN_FILE_PATH>. All Phase 2-12 tool files now
+          exist. Edit ONLY the shared files listed in Phase 13 deliverables: add
+          per-tool imports/registrations to main.py, scenarios/__init__.py,
+          simulate/__init__.py; bump validate.py's tool-count gate; extend
+          coreimports TOOL_NAMES if hardcoded. Validation: `import
+          finetune.simulate`, `import core.agent.main`, and `import
+          finetune.scenarios` all succeed (completeness assert passes, no
+          dup-name ValueError). Print one-line summary and exit."
+
+-------------------------------------------------------------------------------
+### PHASE 14: Full-Suite Verification & Acceptance Gate
+   Prerequisites: Phase 1 (merged), Phase 13
+   Deliverables:
+      - Green full pytest run (all test_tools_*, test_permissions, test_output_
+        hygiene, registry integrity).
+      - finetune/validate.py exit 0 over a freshly generated trace set (or over
+        the existing corpus): MISS rate <= 0.5%, zero I2 violations, ALL tools
+        covered.
+      - An I1 audit: grep core/tools/ for network-capable imports (requests,
+        http, socket, docker, psycopg, mysql.connector) — must be empty.
+      - Final rollup evidence file.
+   Steps:
+      1. `pytest tests/ -q` — all green.
+      2. `python -m finetune.validate <trace-path>` — exit 0.
+      3. Grep for I1 violations + AI-language leaks across new files.
+      4. Confirm Phase 1's consensus-verification-duo verdict is APPROVE.
+   Validation: all four above pass; else route failures back to the owning phase.
+   Risks: a late scenario coverage gap (< 40 for some tool) fails validate.py —
+      bounce to that tool's slice.
+   Subagent orchestration:
+      - Execution shape: [SEQUENTIAL — depends on Phases 1 + 13]
+      - REQUIRED subagent_type: general-purpose (run suite) + the Phase 1
+        consensus-verification-duo verdict already covers the security gate;
+        do NOT re-run a duo for routine test running.
+      - REQUIRED model: opus (final integration reasoning + triaging any failure
+        to the right phase)
+      - Run in background: no
+      - Brief template:
+         "Execute Phase 14 of <PLAN_FILE_PATH>. Run pytest tests/ -q, `python -m
+          finetune.validate <trace>`, and an I1/I2 grep over core/tools/ new
+          files. Confirm the Phase 1 duo verdict is APPROVE. Write
+          runtime/audits/rhel-tools-complete/FINAL.md with pass/fail per gate.
+          Route any failure to the owning phase. Print one-line summary and exit."
+
+## 4. DATA MODEL CHANGES
+   None. No DB, no Drizzle, no migrations, no RLS. The only "schema" is the
+   in-code ToolSpec/OpSpec/ArgSpec dataclasses in core/tools/__init__.py, which
+   are FROZEN and used AS-IS (additive registrations only).
+
+## 5. API CONTRACT
+   No HTTP API. The "contract" is the tool interface:
+     execute(op: str, args: dict) -> ToolResult
+   Every new tool binds to the frozen ToolResult (exit_code, stdout, stderr,
+   summary) and registers a ToolSpec with per-op OpSpec(permission_class, args).
+   The router/REPL/permissions/audit spine consumes this unchanged.
+
+## 6. WORKER / QUEUE CHANGES
+   None. Erdtree has no queue subsystem; tools execute synchronously via
+   run_subprocess in the REPL turn.
+
+## 7. FRONTEND CHANGES
+   None. Terminal-native, no GUI (product invariant). The only user-visible
+   surface is the ToolResult.summary line, which MUST be I2-clean.
+
+## 8. TESTING STRATEGY
+   Unit (per slice): tests/test_tools_<name>.py mirroring test_tools_services.py
+     — patch core.tools.<name>.run_subprocess, assert command vectors, exit-code
+     mapping, I2-clean summaries, SELinux-hint suffix on AVC stderr, and that
+     execute() never raises (I9).
+   Classifier: tests/test_permissions.py — READ/WRITE/DESTRUCTIVE boundary per
+     new verb + non-interactive REFUSE for destructive (Phase 1).
+   Integration: finetune/simulate + finetune/scenarios import-time asserts
+     (completeness + schema-sync); finetune/validate.py replay through the LIVE
+     router.
+   Hygiene: test_output_hygiene / assert_no_ai_language over all new summaries.
+   Manual QA (on mossad, DEFERRED-live): spot-run a handful of READ ops against
+     the real Rocky/Arch box via `ssh mossad` to sanity-check argv shapes.
+
+## 9. ROLLOUT & OBSERVABILITY
+   Feature flag: none needed — tools are inert until the router routes to them;
+     an unregistered tool is simply unreachable. New tools can be merged tool-by-
+     tool (each slice is independently importable).
+   Observability: the existing audit.jsonl captures every op (I4) unchanged.
+   Rollback: remove the tool's import line from main.py (and its aggregator
+     lines) — the leaf file is pure additive, so deletion is clean. Reverting
+     Phase 1 permissions.py changes reverts gating only (never leaves a tool
+     under-gated because default-deny floors at WRITE).
+
+## 10. OPEN QUESTIONS
+   - Q1: Does finetune/coreimports.TOOL_NAMES derive from the live registry or
+     hardcode 11 names? (Phase 0 step 4 resolves; changes Phase 13 scope.)
+   - Q2: Scope trim — 44 tools vs the requested 35-40. Which category is the cut
+     line if we must shrink? (Recommend: H perf/perf/sosreport and buildah are
+     the most droppable for v1.)
+   - Q3: For the psql/mysql "query" op — do we want a hard read-only guard (parse
+     the SQL verb) or accept advisory-class + classifier-on-argv? (Plan assumes
+     the latter, biased to WRITE on doubt.)
+   - Q4: Should nmcli/dns/routing/bond be FOUR tools or folded into an expanded
+     'network' tool? (Plan keeps them separate per the request; OVERLAP-MAP will
+     surface confusion risk.)
+
+## 11. ESTIMATED EFFORT
+   Phase 0  (foundations/manifest)          — M
+   Phase 1  (classifier + duo gate)         — L   (correctness-critical)
+   Phase 2  A security/selinux (4)          — L   (semanage/audit depth)
+   Phase 3  B storage (5)                   — L
+   Phase 4  C networking (5)                — M   (overlap care)
+   Phase 5  D containers/virt (3)           — M
+   Phase 6  E scheduling (4)                — S
+   Phase 7  F sysconfig (6)                 — L   (6 tools)
+   Phase 8  G package/subscription (3)      — S
+   Phase 9  H perf/monitoring (3)           — S
+   Phase 10 I web/db (4)                    — M   (SQL gating nuance)
+   Phase 11 J backup/archive (3)            — S
+   Phase 12 K compliance (4)                — M
+   Phase 13 wiring (serialized)             — S
+   Phase 14 verification                    — M
+   Critical path: 0 -> 1 (+ its duo gate) -> 14, with 2-12 fanned out in
+   parallel alongside 1, converging at 13.
+
+## 12. EXECUTOR ORCHESTRATION GUIDE
+
+### 12.1 Parallelism map
+   Phase | Execution           | Siblings | Depends on   | Model  | Subagent type
+   P0    | SINGLE              | —        | none         | opus   | general-purpose
+   P1    | SINGLE (+duo gate)  | —        | P0           | opus   | general-purpose -> consensus-verification-duo
+   P2 A  | PARALLEL FANOUT     | 4        | P0           | sonnet | general-purpose
+   P3 B  | PARALLEL FANOUT     | 5        | P0           | sonnet | general-purpose
+   P4 C  | PARALLEL FANOUT     | 5        | P0           | sonnet | general-purpose
+   P5 D  | PARALLEL FANOUT     | 3        | P0           | sonnet | general-purpose
+   P6 E  | PARALLEL FANOUT     | 4        | P0           | sonnet | general-purpose
+   P7 F  | PARALLEL FANOUT     | 6        | P0           | sonnet | general-purpose
+   P8 G  | PARALLEL FANOUT     | 3        | P0           | sonnet | general-purpose
+   P9 H  | PARALLEL FANOUT     | 3        | P0           | sonnet | general-purpose
+   P10 I | PARALLEL FANOUT     | 4        | P0           | sonnet | general-purpose
+   P11 J | PARALLEL FANOUT     | 3        | P0           | sonnet | general-purpose
+   P12 K | PARALLEL FANOUT     | 4        | P0           | sonnet | general-purpose
+   P13   | SINGLE (serialized) | —        | P2..P12 all  | sonnet | general-purpose
+   P14   | SINGLE              | —        | P1, P13      | opus   | general-purpose
+
+   DAG (non-linear):
+                     ┌──> P1 (classifier) ──────────────┐
+                     │                                   v
+        P0 ──────────┼──> P2 A ┐                        P14 (accept)
+                     │    P3 B │                          ^
+                     │    ...  ├─(43 tool slices, 11 ── > P13 (wiring) ─┘
+                     │    P12 K┘  parallel waves)
+   P1 runs CONCURRENTLY with the tool waves (no code coupling); both must land
+   before P14. P13 waits for ALL tool slices; P14 waits for P1 + P13.
+
+   Fan-out ceiling: 44 slices total. Do NOT launch all 44 at once. Run the
+   lettered waves as batches of <= ~12 concurrent siblings (A+B+part-C, etc.),
+   or one letter at a time. Slices are additive/collision-free so the only real
+   limits are token budget and host throughput, not Edit conflicts.
+
+### 12.2 Cross-phase work consolidation
+   - Each tool slice creates 4 files in ONE agent (tool + scenarios + simulator
+     + test). This is deliberate: op names and arg schemas stay in-context, so
+     INV-schema-sync and the simulator's op-coverage are correct by construction.
+     Do NOT split a tool's scenario/simulator into separate agents — that forces
+     a re-read of the ToolSpec and invites drift.
+   - ALL slices read the SAME two inputs: SLICE-CONTRACT.md and
+     core/tools/services.py. These are small; per-slice re-reads are fine (no
+     need to pre-distill).
+   - The 5 shared registration files (main.py, scenarios/__init__.py, simulate/
+     __init__.py, coreimports.py, validate.py) are touched ONLY in P13, by ONE
+     agent, SEQUENTIALLY — never by a tool slice (Edit-collision + completeness-
+     assert ordering).
+   - permissions.py is touched ONLY in P1, by ONE agent — never by a tool slice.
+
+### 12.3 Model-mix budget
+   - Fable: 0 phases. The one correctness-critical phase (P1 classifier) is
+     handled by opus AUTHORING + a consensus-verification-duo adversarial gate,
+     which catches missed-verb cases better than a single smarter pass would.
+     No phase requires frontier-grade solo reasoning.
+   - Opus: P0, P1, P14 (+ the duo runs on opus). ~3 of 15 phases (~20%) —
+     justified: whole-surface manifest, security-critical taxonomy, final gate.
+   - Sonnet: all 11 tool waves + P13 wiring. ~73%.
+   - Haiku: 0 — every slice has real logic (arg schemas, SELinux hints, exit-code
+     mapping); haiku would produce brittle tool code.
+   Rough split: 0% fable / ~20% opus / ~80% sonnet / 0% haiku.
+
+### 12.4 Estimated wall-clock
+   Best case (full parallelism, waves batched ~12-wide, P1 concurrent):
+     P0 (~5m) -> [P1 ~15m ∥ tool waves ~4 batches x ~8m = ~32m] -> P13 (~8m)
+     -> P14 (~10m)  ≈ 55-60 minutes.
+   Strictly serial (one slice at a time, 44 slices x ~7m + P0/P1/P13/P14):
+     ≈ 6-7 hours.
+   Critical path: P0 -> tool waves (longest batch) -> P13 -> P14. P1's duo gate
+   runs alongside and must be APPROVE before P14 accepts.
+
+### 12.5 Failure recovery policy
+   - Tool slice (P2-P12) fails its own tests: retry up to 2x with the same
+     sonnet subagent (non-flaky; usually an arg-schema or I2-string fix). On 3rd
+     failure, log a deferred-item and continue — one missing tool does not block
+     the others (but P13's completeness assert will flag it).
+   - P1 classifier duo returns BLOCK: PAUSE and escalate to user — a missed
+     destructive verd is a safety call, not an auto-retry.
+   - P13 completeness assert fails (a tool op has no simulator): bounce to that
+     tool's slice agent to add the missing simulator op; do NOT stub it in the
+     aggregator.
+   - P14 validate.py < coverage or MISS-rate over threshold: bounce to the
+     offending tool's slice to add scenarios; re-run.
+   - Default (unspecified failure): pause and escalate.
+
+### 12.6 Audit trail location
+   Per-phase evidence: runtime/audits/rhel-tools-complete/phase-<id>.md
+   Phase 0 artifacts:  runtime/audits/rhel-tools-complete/phase-0/{SLICE-CONTRACT,
+                       DESTRUCTIVE-VERB-MANIFEST, OVERLAP-MAP}.md
+   Final rollup:       runtime/audits/rhel-tools-complete/FINAL.md
+
+=====================================================================
+END OF PLAN
+=====================================================================

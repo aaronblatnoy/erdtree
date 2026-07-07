@@ -69,17 +69,61 @@ class Scenario:
 # No circular dependency: sub-modules import from finetune.coreimports only.
 # ---------------------------------------------------------------------------
 
-from . import disk        # noqa: E402
-from . import docs        # noqa: E402
-from . import files       # noqa: E402
-from . import firewall    # noqa: E402
-from . import hardware    # noqa: E402
-from . import logs        # noqa: E402
-from . import network     # noqa: E402
-from . import packages    # noqa: E402
-from . import processes   # noqa: E402
-from . import services    # noqa: E402
-from . import users       # noqa: E402
+from . import aide           # noqa: E402
+from . import at             # noqa: E402
+from . import audit          # noqa: E402
+from . import bond           # noqa: E402
+from . import buildah        # noqa: E402
+from . import chrony         # noqa: E402
+from . import cron           # noqa: E402
+from . import crypto_policies  # noqa: E402
+from . import disk           # noqa: E402
+from . import dnf_modules    # noqa: E402
+from . import dns            # noqa: E402
+from . import docs           # noqa: E402
+from . import fapolicyd      # noqa: E402
+from . import files          # noqa: E402
+from . import firewall       # noqa: E402
+from . import grub           # noqa: E402
+from . import hardware       # noqa: E402
+from . import hostname       # noqa: E402
+from . import httpd          # noqa: E402
+from . import kernel_modules  # noqa: E402
+from . import locale         # noqa: E402
+from . import logs           # noqa: E402
+from . import lvm            # noqa: E402
+from . import mariadb        # noqa: E402
+from . import network        # noqa: E402
+from . import nfs            # noqa: E402
+from . import nftables       # noqa: E402
+from . import nginx          # noqa: E402
+from . import nmcli          # noqa: E402
+from . import packages       # noqa: E402
+from . import pam            # noqa: E402
+from . import perf           # noqa: E402
+from . import performance    # noqa: E402
+from . import podman         # noqa: E402
+from . import postgresql     # noqa: E402
+from . import processes      # noqa: E402
+from . import quota          # noqa: E402
+from . import restic         # noqa: E402
+from . import routing        # noqa: E402
+from . import rpm            # noqa: E402
+from . import rsync          # noqa: E402
+from . import samba          # noqa: E402
+from . import selinux        # noqa: E402
+from . import services       # noqa: E402
+from . import sosreport      # noqa: E402
+from . import ssh_keys       # noqa: E402
+from . import sssd           # noqa: E402
+from . import stratis        # noqa: E402
+from . import subscription   # noqa: E402
+from . import sysctl         # noqa: E402
+from . import systemd_timers  # noqa: E402
+from . import tar            # noqa: E402
+from . import tuned          # noqa: E402
+from . import users          # noqa: E402
+from . import virsh          # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -115,17 +159,61 @@ def _normalise(raw_list: list) -> list[Scenario]:
 # ---------------------------------------------------------------------------
 
 ALL_SCENARIOS: list[Scenario] = (
-    _normalise(disk.SCENARIOS)
+    _normalise(aide.SCENARIOS)
+    + _normalise(at.SCENARIOS)
+    + _normalise(audit.SCENARIOS)
+    + _normalise(bond.SCENARIOS)
+    + _normalise(buildah.SCENARIOS)
+    + _normalise(chrony.SCENARIOS)
+    + _normalise(cron.SCENARIOS)
+    + _normalise(crypto_policies.SCENARIOS)
+    + _normalise(disk.SCENARIOS)
+    + _normalise(dnf_modules.SCENARIOS)
+    + _normalise(dns.SCENARIOS)
     + _normalise(docs.SCENARIOS)
+    + _normalise(fapolicyd.SCENARIOS)
     + _normalise(files.SCENARIOS)
     + _normalise(firewall.SCENARIOS)
+    + _normalise(grub.SCENARIOS)
     + _normalise(hardware.SCENARIOS)
+    + _normalise(hostname.SCENARIOS)
+    + _normalise(httpd.SCENARIOS)
+    + _normalise(kernel_modules.SCENARIOS)
+    + _normalise(locale.SCENARIOS)
     + _normalise(logs.SCENARIOS)
+    + _normalise(lvm.SCENARIOS)
+    + _normalise(mariadb.SCENARIOS)
     + _normalise(network.SCENARIOS)
+    + _normalise(nfs.SCENARIOS)
+    + _normalise(nftables.SCENARIOS)
+    + _normalise(nginx.SCENARIOS)
+    + _normalise(nmcli.SCENARIOS)
     + _normalise(packages.SCENARIOS)
+    + _normalise(pam.SCENARIOS)
+    + _normalise(perf.SCENARIOS)
+    + _normalise(performance.SCENARIOS)
+    + _normalise(podman.SCENARIOS)
+    + _normalise(postgresql.SCENARIOS)
     + _normalise(processes.SCENARIOS)
+    + _normalise(quota.SCENARIOS)
+    + _normalise(restic.SCENARIOS)
+    + _normalise(routing.SCENARIOS)
+    + _normalise(rpm.SCENARIOS)
+    + _normalise(rsync.SCENARIOS)
+    + _normalise(samba.SCENARIOS)
+    + _normalise(selinux.SCENARIOS)
     + _normalise(services.SCENARIOS)
+    + _normalise(sosreport.SCENARIOS)
+    + _normalise(ssh_keys.SCENARIOS)
+    + _normalise(sssd.SCENARIOS)
+    + _normalise(stratis.SCENARIOS)
+    + _normalise(subscription.SCENARIOS)
+    + _normalise(sysctl.SCENARIOS)
+    + _normalise(systemd_timers.SCENARIOS)
+    + _normalise(tar.SCENARIOS)
+    + _normalise(tuned.SCENARIOS)
     + _normalise(users.SCENARIOS)
+    + _normalise(virsh.SCENARIOS)
 )
 
 
@@ -179,7 +267,7 @@ assert len(ALL_SCENARIOS) >= 600, (
     "Add more scenarios to the per-tool modules."
 )
 
-# 2. All 11 registered tool names have at least one scenario
+# 2. All 55 registered tool names have at least one scenario
 _scenario_tools: frozenset[str] = frozenset(s.tool for s in ALL_SCENARIOS)
 for _t in TOOL_NAMES:
     assert _t in _scenario_tools, (

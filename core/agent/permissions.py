@@ -124,6 +124,10 @@ _READ_COMMANDS = frozenset(
         "cmp", "diff", "tree", "getfacl", "getcap", "sestatus", "getenforce",
         "firewall-cmd", "nmcli", "ethtool", "smartctl", "sensors", "vmstat",
         "iostat", "mpstat", "sar", "tcpdump", "watch", "tee", "xargs",
+        # RHEL-9 tool-surface read binaries (whole-program readers).
+        "getsebool", "pvdisplay", "vgdisplay", "lvdisplay", "pvs", "vgs", "lvs",
+        "pvscan", "vgscan", "lvscan", "showmount", "testparm", "repquota",
+        "quota", "modinfo", "atq", "pg_isready",
     }
 )
 
@@ -177,6 +181,105 @@ _SUBCOMMAND_CLASS = {
         "addr": OpClass.READ, "a": OpClass.READ, "link": OpClass.READ,
         "route": OpClass.READ, "r": OpClass.READ, "neigh": OpClass.READ,
     },
+    # --- RHEL-9 tool surface: sub-verb-aware commands. DESTRUCTIVE forms are
+    #     escalated first in _classify_argv; these settle the READ vs WRITE split.
+    "podman": {
+        "ps": OpClass.READ, "images": OpClass.READ, "image": OpClass.READ,
+        "inspect": OpClass.READ, "logs": OpClass.READ, "info": OpClass.READ,
+        "version": OpClass.READ, "port": OpClass.READ, "top": OpClass.READ,
+        "healthcheck": OpClass.READ, "diff": OpClass.READ, "search": OpClass.READ,
+        "history": OpClass.READ, "ls": OpClass.READ, "exists": OpClass.READ,
+        "stats": OpClass.READ,
+        "pull": OpClass.WRITE, "run": OpClass.WRITE, "create": OpClass.WRITE,
+        "start": OpClass.WRITE, "stop": OpClass.WRITE, "restart": OpClass.WRITE,
+        "exec": OpClass.WRITE, "build": OpClass.WRITE, "push": OpClass.WRITE,
+        "commit": OpClass.WRITE, "tag": OpClass.WRITE, "kill": OpClass.WRITE,
+        "pause": OpClass.WRITE, "unpause": OpClass.WRITE, "load": OpClass.WRITE,
+        "save": OpClass.WRITE, "cp": OpClass.WRITE, "import": OpClass.WRITE,
+        "export": OpClass.WRITE,
+    },
+    "buildah": {
+        "images": OpClass.READ, "inspect": OpClass.READ,
+        "containers": OpClass.READ, "version": OpClass.READ, "ls": OpClass.READ,
+        "from": OpClass.WRITE, "copy": OpClass.WRITE, "run": OpClass.WRITE,
+        "commit": OpClass.WRITE, "push": OpClass.WRITE, "bud": OpClass.WRITE,
+        "build": OpClass.WRITE, "config": OpClass.WRITE, "add": OpClass.WRITE,
+        "mount": OpClass.WRITE, "unmount": OpClass.WRITE, "tag": OpClass.WRITE,
+    },
+    "virsh": {
+        "list": OpClass.READ, "dominfo": OpClass.READ, "domstate": OpClass.READ,
+        "dumpxml": OpClass.READ, "nodeinfo": OpClass.READ,
+        "capabilities": OpClass.READ, "version": OpClass.READ,
+        "pool-list": OpClass.READ, "pool-info": OpClass.READ,
+        "vol-list": OpClass.READ, "net-list": OpClass.READ,
+        "start": OpClass.WRITE, "shutdown": OpClass.WRITE, "reboot": OpClass.WRITE,
+        "define": OpClass.WRITE, "create": OpClass.WRITE, "suspend": OpClass.WRITE,
+        "resume": OpClass.WRITE, "save": OpClass.WRITE, "autostart": OpClass.WRITE,
+        "setmem": OpClass.WRITE, "setvcpus": OpClass.WRITE,
+        "attach-device": OpClass.WRITE, "pool-define": OpClass.WRITE,
+        "pool-start": OpClass.WRITE,
+    },
+    "stratis": {
+        "list": OpClass.READ,
+        "create": OpClass.WRITE, "snapshot": OpClass.WRITE,
+        "rename": OpClass.WRITE, "add-data": OpClass.WRITE,
+        "add-cache": OpClass.WRITE, "init-cache": OpClass.WRITE,
+        "set-name": OpClass.WRITE, "bind": OpClass.WRITE,
+    },
+    "nmcli": {
+        "show": OpClass.READ, "status": OpClass.READ, "list": OpClass.READ,
+        "monitor": OpClass.READ,
+        "up": OpClass.WRITE, "down": OpClass.WRITE, "add": OpClass.WRITE,
+        "modify": OpClass.WRITE, "edit": OpClass.WRITE, "connect": OpClass.WRITE,
+        "reload": OpClass.WRITE, "clone": OpClass.WRITE,
+    },
+    "nft": {"list": OpClass.READ},
+    "realm": {
+        "list": OpClass.READ, "discover": OpClass.READ,
+        "join": OpClass.WRITE, "permit": OpClass.WRITE, "deny": OpClass.WRITE,
+    },
+    "restic": {
+        "snapshots": OpClass.READ, "ls": OpClass.READ, "stats": OpClass.READ,
+        "check": OpClass.READ, "find": OpClass.READ, "cat": OpClass.READ,
+        "diff": OpClass.READ, "version": OpClass.READ,
+        "backup": OpClass.WRITE, "restore": OpClass.WRITE, "forget": OpClass.WRITE,
+        "init": OpClass.WRITE, "copy": OpClass.WRITE, "tag": OpClass.WRITE,
+        "unlock": OpClass.WRITE, "rebuild-index": OpClass.WRITE,
+    },
+    "subscription-manager": {
+        "status": OpClass.READ, "list": OpClass.READ, "identity": OpClass.READ,
+        "version": OpClass.READ,
+        "register": OpClass.WRITE, "attach": OpClass.WRITE, "repos": OpClass.WRITE,
+        "config": OpClass.WRITE, "refresh": OpClass.WRITE, "role": OpClass.WRITE,
+        "auto-attach": OpClass.WRITE,
+    },
+    "mysqladmin": {
+        "status": OpClass.READ, "ping": OpClass.READ, "version": OpClass.READ,
+        "processlist": OpClass.READ, "variables": OpClass.READ,
+        "extended-status": OpClass.READ,
+        "reload": OpClass.WRITE, "refresh": OpClass.WRITE,
+        "flush-hosts": OpClass.WRITE, "flush-logs": OpClass.WRITE,
+        "flush-status": OpClass.WRITE, "flush-tables": OpClass.WRITE,
+    },
+    "tuned-adm": {
+        "list": OpClass.READ, "active": OpClass.READ, "recommend": OpClass.READ,
+        "verify": OpClass.READ, "profile_info": OpClass.READ,
+        "profile": OpClass.WRITE, "off": OpClass.WRITE, "auto_profile": OpClass.WRITE,
+    },
+}
+
+# podman/buildah use a `<noun> <verb>` grammar (e.g. `podman image pull`,
+# `podman container rm`). The VERB governs classification, not the leading noun,
+# so when the first non-flag sub-token is one of these nouns we resolve the class
+# on the FOLLOWING sub-token. Only SINGULAR object nouns live here — the plural
+# top-level list commands (`podman images`, `buildah containers`) are real READ
+# sub-verbs in _SUBCOMMAND_CLASS and must NOT be treated as noun prefixes.
+_CONTAINER_NOUNS: dict[str, frozenset[str]] = {
+    "podman": frozenset(
+        {"image", "container", "volume", "network", "pod", "system",
+         "manifest", "secret", "machine"}
+    ),
+    "buildah": frozenset({"container", "image"}),
 }
 
 # ---------------------------------------------------------------------------
@@ -237,7 +340,31 @@ _DESTRUCTIVE_PROGRAMS: dict[str, str] = {
     "userdel": "deleting a user can lock out access",
     "deluser": "deleting a user can lock out access",
     "chpasswd": "bulk password change can lock out access",
+    # RHEL-9 tool surface: whole-program destructives.
+    "dropdb": "dropping a database permanently destroys it",
+    "dropuser": "dropping a database role can lock out access",
+    "rmmod": "unloading a live kernel module can wedge or disconnect the host",
+    "atrm": "removing a queued at job cancels it irreversibly",
 }
+
+# Kernel parameters whose modification can wedge the host, sever networking, or
+# create a one-way lockout (e.g. modules_disabled is irreversible until reboot).
+# A `sysctl` write to any of these escalates to DESTRUCTIVE.
+_SYSCTL_CRITICAL_KEYS = frozenset(
+    {
+        "kernel.panic", "kernel.sysrq", "kernel.core_pattern",
+        "net.ipv4.ip_forward", "vm.overcommit_memory",
+        "net.ipv4.conf.all.rp_filter", "kernel.modules_disabled",
+        "kernel.kexec_load_disabled",
+    }
+)
+
+# SQL bodies passed to psql -c / mysql -e that contain any of these verbs erase
+# or mutate persistent data destructively. Case-insensitive, word-bounded so a
+# column named e.g. `deleted_at` does not trip it.
+_SQL_DESTRUCTIVE_RE = re.compile(r"\b(?:DROP|TRUNCATE|DELETE|ALTER)\b", re.IGNORECASE)
+# A single leading statement verb that proves the body is read-only.
+_SQL_READ_VERBS = frozenset({"SELECT", "SHOW", "EXPLAIN", "DESCRIBE", "DESC"})
 # Power/boot-state verbs (bare commands).
 _POWER_PROGRAMS = frozenset(
     {"reboot", "shutdown", "poweroff", "halt", "telinit", "kexec"}
@@ -290,6 +417,20 @@ _WRITE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bgit\b.*\b(?:commit|push|merge|rebase|reset|checkout|clean|stash|pull|clone|init|add)\b"),
     re.compile(r"\b(?:mount|umount|swapon|swapoff)\b"),
     re.compile(r"\b(?:ip|nmcli|firewall-cmd|iptables|nft|ufw)\b"),  # network mutation verbs land here unless destructive matched first
+    # RHEL-9 tool surface: recognized state-changing (WRITE) verbs so they read
+    # as a "recognized state-changing operation", not "unrecognized ... for
+    # safety". DESTRUCTIVE forms were escalated earlier; these are the benign
+    # mutators that ceiling at CONFIRM.
+    re.compile(r"\b(?:setsebool|setenforce|semodule|restorecon|chcon|fixfiles)\b"),
+    re.compile(r"\b(?:pvcreate|vgcreate|lvcreate|lvextend|vgextend|lvresize|vgchange|lvchange|pvchange|vgmerge|vgsplit)\b"),
+    re.compile(r"\b(?:quotaon|quotaoff|quotacheck|edquota|setquota)\b"),
+    re.compile(r"\b(?:createdb|createuser|pg_dump|pg_dumpall|pg_restore|pg_basebackup)\b"),
+    re.compile(r"\b(?:mysqldump|mysqlimport|mysql_upgrade)\b"),
+    re.compile(r"\b(?:modprobe|insmod|depmod)\b"),
+    re.compile(r"\b(?:smbpasswd|pdbedit)\b"),
+    re.compile(r"\b(?:sss_cache|aide|fapolicyd-cli|faillock|pam-auth-update)\b"),
+    re.compile(r"\bresolvectl\b\s+\w*(?:flush|revert|set|dns|domain)"),
+    re.compile(r"\bchronyc\b\s+\w*(?:makestep|burst|add|delete|offline|online|reload)"),
     re.compile(r">>?"),  # any output redirection that wasn't caught as destructive
 )
 
@@ -510,6 +651,145 @@ def _targets_block_device(operands: Sequence[str]) -> bool:
     return False
 
 
+def _sql_bodies(tokens: Sequence[str]) -> list[str]:
+    """Extract every inline SQL body from a psql/mysql/mariadb argv.
+
+    Covers `-c <sql>` / `--command <sql>` (psql) and `-e <sql>` /
+    `--execute <sql>` (mysql/mariadb), in both the separate-token and
+    `--command=<sql>` forms. Multiple bodies are returned in order.
+    """
+    bodies: list[str] = []
+    i = 1
+    n = len(tokens)
+    while i < n:
+        t = tokens[i]
+        base = t.split("=", 1)[0]
+        if base in ("-c", "--command", "-e", "--execute"):
+            if t.startswith("--") and "=" in t:
+                bodies.append(t.split("=", 1)[1])
+            elif i + 1 < n:
+                bodies.append(tokens[i + 1])
+                i += 1
+        i += 1
+    return bodies
+
+
+def _classify_sql_tool(tokens: Sequence[str]) -> tuple[OpClass, str] | None:
+    """Classify a psql/mysql/mariadb invocation by inspecting its SQL body.
+
+    Biased hard toward escalation (see the manifest SQL-GATING rule): a body
+    containing DROP/TRUNCATE/DELETE/ALTER is DESTRUCTIVE; any other mutating or
+    unrecognized SQL is WRITE; only a single leading SELECT/SHOW/EXPLAIN body
+    stays READ. File-input forms (`-f`) cannot be inspected -> WRITE.
+    """
+    bodies = _sql_bodies(tokens)
+    if not bodies:
+        # -f/--file input cannot be proven read-only.
+        if any(t.split("=", 1)[0] in ("-f", "--file") for t in tokens[1:]):
+            return OpClass.WRITE, "running SQL from a file cannot be verified as read-only"
+        return None
+    joined = " ; ".join(bodies)
+    if _SQL_DESTRUCTIVE_RE.search(joined):
+        return OpClass.DESTRUCTIVE, "SQL that drops, truncates, deletes, or alters data can destroy it"
+    for body in bodies:
+        s = body.strip().lstrip("(").strip()
+        m = re.match(r"\s*([A-Za-z]+)", s)
+        verb = m.group(1).upper() if m else ""
+        stmts = [x for x in s.split(";") if x.strip()]
+        if verb not in _SQL_READ_VERBS or len(stmts) > 1:
+            return OpClass.WRITE, "SQL statement changes state"
+    return OpClass.READ, "read-only SQL query"
+
+
+def _classify_flagbased(tokens: Sequence[str], raw: str) -> tuple[OpClass, str] | None:
+    """Settle the READ vs WRITE split for tools whose risk lives in flags or a
+    command/SQL argument rather than a sub-verb token.
+
+    DESTRUCTIVE forms for these verbs are ALREADY escalated in _classify_argv;
+    this layer only distinguishes read from write, and returns None for any verb
+    it does not own (letting the generic sub-command / default-deny layers run).
+    """
+    if not tokens:
+        return None
+    verb = _argv0(tokens[0])
+    flags = _flag_letters(tokens)
+    ops = _operands(tokens)
+
+    if verb in ("psql", "mysql", "mariadb"):
+        return _classify_sql_tool(tokens)
+
+    if verb == "rsync":
+        # --delete* -> DESTRUCTIVE handled in _classify_argv.
+        if "n" in flags or "--dry-run" in flags or "--list-only" in flags:
+            return OpClass.READ, "rsync dry-run makes no changes"
+        return OpClass.WRITE, "rsync copies files and can overwrite the destination"
+
+    if verb == "sysctl":
+        # Writes to a critical key -> DESTRUCTIVE handled in _classify_argv.
+        writing = "w" in flags or "p" in flags or "--load" in flags or any("=" in o for o in ops)
+        if writing:
+            return OpClass.WRITE, "writing a kernel parameter changes system behavior"
+        return OpClass.READ, "reading kernel parameters"
+
+    if verb == "exportfs":
+        # -u (unexport) -> DESTRUCTIVE handled in _classify_argv.
+        if flags & {"a", "r", "i", "o"}:
+            return OpClass.WRITE, "changing NFS exports changes what the host serves"
+        return OpClass.READ, "listing NFS exports"
+
+    if verb == "crontab":
+        # -r -> DESTRUCTIVE handled in _classify_argv.
+        if "e" in flags:
+            return OpClass.WRITE, "editing the crontab changes scheduled jobs"
+        if "l" in flags:
+            return OpClass.READ, "listing the crontab"
+        if ops:
+            return OpClass.WRITE, "installing a crontab replaces scheduled jobs"
+        return OpClass.READ, "listing the crontab"
+
+    if verb == "at":
+        # -r / -d -> DESTRUCTIVE handled in _classify_argv.
+        if "l" in flags or "c" in flags:
+            return OpClass.READ, "listing or printing scheduled at jobs"
+        return OpClass.WRITE, "scheduling an at job"
+
+    if verb == "auditctl":
+        # -d / -D / -e 0 -> DESTRUCTIVE handled in _classify_argv.
+        if (flags & {"l", "s"}) and not (flags & {"a", "w", "r", "e", "f", "b", "m", "p"}):
+            return OpClass.READ, "reading the audit rule set or status"
+        return OpClass.WRITE, "changing the audit rule set changes compliance monitoring"
+
+    if verb == "semanage":
+        # -d / --delete -> DESTRUCTIVE handled in _classify_argv.
+        if flags & {"a", "m"} or "--add" in flags or "--modify" in flags:
+            return OpClass.WRITE, "changing an SELinux policy mapping changes labeling"
+        if "l" in flags or "--list" in flags:
+            return OpClass.READ, "listing SELinux policy mappings"
+        return OpClass.WRITE, "changing an SELinux policy mapping changes labeling"
+
+    if verb == "grubby":
+        # --remove-kernel -> DESTRUCTIVE handled in _classify_argv.
+        write_flags = {
+            "--set-default", "--set-default-index", "--update-kernel",
+            "--args", "--remove-args", "--add-kernel",
+        }
+        read_flags = {
+            "--info", "--default-kernel", "--default-index",
+            "--default-title", "--get-default", "--default",
+        }
+        if flags & write_flags:
+            return OpClass.WRITE, "changing the boot entry changes what the host boots"
+        if flags & read_flags:
+            return OpClass.READ, "reading boot loader entries"
+        return OpClass.WRITE, "changing the boot entry changes what the host boots"
+
+    if verb == "modprobe":
+        # -r / --remove -> DESTRUCTIVE handled in _classify_argv.
+        return OpClass.WRITE, "loading a kernel module changes the running kernel"
+
+    return None
+
+
 def _classify_argv(tokens: Sequence[str], raw: str) -> tuple[OpClass, str] | None:
     """Argv-aware destructive detection for a single sub-command.
 
@@ -699,6 +979,134 @@ def _classify_argv(tokens: Sequence[str], raw: str) -> tuple[OpClass, str] | Non
         if "-exec" in tokens and any(_argv0(t) == "rm" for t in tokens):
             return OpClass.DESTRUCTIVE, "find -exec rm removes matching files irreversibly"
 
+    # ------------------------------------------------------------------
+    # RHEL-9 tool-surface destructive verbs (Phase 1 taxonomy extension).
+    # Each escalates the NARROWEST data-loss / lockout argv shape; the READ
+    # and WRITE siblings are settled by _classify_flagbased or _SUBCOMMAND_CLASS.
+    # ------------------------------------------------------------------
+    sub = {_argv0(t) for t in tokens[1:] if not t.startswith("-")}
+
+    # --- containers: podman/buildah rm/rmi destroy a container or image;
+    #     prune bulk-deletes objects and their data. The VERB governs regardless
+    #     of any leading noun (`podman image prune`, `podman container rm`), so a
+    #     set-membership test over all non-flag sub-tokens catches every form.
+    if verb in ("podman", "buildah"):
+        if "prune" in sub:
+            return OpClass.DESTRUCTIVE, "pruning bulk-removes images, containers, or volumes and their data"
+        if "rm" in sub or "rmi" in sub:
+            return OpClass.DESTRUCTIVE, "removing a container or image destroys it and its writable data"
+
+    # --- virsh: destroy/undefine a domain, or destroy/delete a pool/volume.
+    if verb == "virsh":
+        if sub & {"destroy", "undefine", "pool-destroy", "pool-delete",
+                  "pool-undefine", "vol-delete", "snapshot-delete"}:
+            return OpClass.DESTRUCTIVE, "destroying or undefining a domain, pool, or volume can permanently lose data"
+
+    # --- stratis: pool/filesystem destroy erases all its data.
+    if verb == "stratis" and "destroy" in sub:
+        return OpClass.DESTRUCTIVE, "destroying a pool or filesystem erases its data"
+
+    # --- restic: forget --prune / prune permanently removes backup data.
+    if verb == "restic":
+        if "prune" in sub or ("forget" in sub and "--prune" in flags):
+            return OpClass.DESTRUCTIVE, "pruning permanently removes backup snapshots and data"
+
+    # --- rsync --delete (and its `--del` alias for --delete-during) removes
+    #     files from the destination tree. `--del` is matched EXACTLY so it does
+    #     not swallow unrelated flags like `--delay-updates`.
+    if verb == "rsync":
+        if any(f == "--delete" or f == "--del" or f.startswith("--delete-") for f in flags):
+            return OpClass.DESTRUCTIVE, "rsync --delete removes files from the destination tree"
+
+    # --- realm leave removes domain auth — a lockout of all domain logins.
+    if verb == "realm" and "leave" in sub:
+        return OpClass.DESTRUCTIVE, "leaving the domain removes domain authentication and can lock out logins"
+
+    # --- subscription-manager unregister / remove --all revokes entitlements.
+    if verb == "subscription-manager":
+        if "unregister" in sub:
+            return OpClass.DESTRUCTIVE, "unregistering removes the system's entitlements and access to updates"
+        if "remove" in sub and "--all" in flags:
+            return OpClass.DESTRUCTIVE, "removing all subscriptions revokes the system's entitlements"
+
+    # --- mysqladmin drop <db> drops a database.
+    if verb == "mysqladmin" and "drop" in sub:
+        return OpClass.DESTRUCTIVE, "dropping a database permanently destroys it"
+
+    # --- nmcli connection delete / device disconnect: sever configuration/link.
+    #     nmcli accepts prefix abbreviations for BOTH the object and the verb
+    #     (`nmcli con del`, `nmcli c del`, `nmcli conn del`, `nmcli dev disc`).
+    #     Match any prefix of the object word, and a >=3-char prefix of the
+    #     destructive verb. The >=3 floor avoids false-gating benign siblings
+    #     like `nmcli con down` / `nmcli con show d` (whose short tokens are not
+    #     >=3-char prefixes of delete/disconnect).
+    if verb == "nmcli":
+        def _is_prefix(tok: str, word: str, minlen: int) -> bool:
+            return len(tok) >= minlen and word.startswith(tok)
+        conn_obj = any(_is_prefix(t, "connection", 1) for t in sub)
+        dev_obj = any(_is_prefix(t, "device", 1) for t in sub)
+        if conn_obj and any(_is_prefix(t, "delete", 3) for t in sub):
+            return OpClass.DESTRUCTIVE, "deleting a connection profile can sever the interface and drop remote access"
+        if dev_obj and any(_is_prefix(t, "disconnect", 3) for t in sub):
+            return OpClass.DESTRUCTIVE, "disconnecting the active device can sever remote access"
+
+    # --- exportfs -u: unexport revokes an NFS share (client access loss).
+    if verb == "exportfs" and "u" in flags:
+        return OpClass.DESTRUCTIVE, "unexporting an NFS share cuts off clients that depend on it"
+
+    # --- smbpasswd -x: delete a Samba account (lockout of shares).
+    if verb == "smbpasswd" and "x" in flags:
+        return OpClass.DESTRUCTIVE, "deleting a Samba account can lock the user out of shares"
+
+    # --- semanage ... -d / --delete: delete an SELinux policy mapping.
+    if verb == "semanage" and ("d" in flags or "--delete" in flags):
+        return OpClass.DESTRUCTIVE, "deleting an SELinux policy mapping can break confined service access"
+
+    # --- auditctl -D / -d (delete rules) or -e 0 (disable auditing).
+    if verb == "auditctl":
+        if "-D" in tokens or "-d" in tokens:
+            return OpClass.DESTRUCTIVE, "removing audit rules destroys the compliance monitoring surface"
+        for i, t in enumerate(tokens):
+            if t == "-e" and i + 1 < len(tokens) and tokens[i + 1] == "0":
+                return OpClass.DESTRUCTIVE, "disabling auditing turns off the audit subsystem"
+
+    # --- crontab -r: wipes the entire crontab with no prompt.
+    if verb == "crontab" and "r" in flags:
+        return OpClass.DESTRUCTIVE, "crontab -r removes the entire crontab with no prompt"
+
+    # --- at -r / -d: removes a queued at job irreversibly.
+    if verb == "at" and ("r" in flags or "d" in flags):
+        return OpClass.DESTRUCTIVE, "removing a queued at job cancels it irreversibly"
+
+    # --- modprobe -r / --remove: unloading a live module can wedge the box.
+    if verb == "modprobe" and ("r" in flags or "--remove" in flags):
+        return OpClass.DESTRUCTIVE, "unloading a live kernel module can wedge or disconnect the host"
+
+    # --- grubby --remove-kernel: can leave the host with no bootable kernel.
+    if verb == "grubby" and "--remove-kernel" in flags:
+        return OpClass.DESTRUCTIVE, "removing a kernel entry can leave the host with no bootable kernel"
+
+    # --- ip route del default / route flush / rule flush: sever connectivity.
+    if verb == "ip":
+        if re.search(r"\broute\b.*\b(?:del|delete)\b.*\bdefault\b", raw) or \
+           re.search(r"\broute\b.*\bflush\b", raw):
+            return OpClass.DESTRUCTIVE, "removing the default route or flushing the route table can sever remote access"
+        if re.search(r"\brule\b.*\bflush\b", raw):
+            return OpClass.DESTRUCTIVE, "flushing routing policy rules can sever remote access"
+
+    # --- sysctl write to a critical kernel key (wedge / lockout).
+    if verb == "sysctl":
+        if "w" in flags or any("=" in o for o in ops):
+            keys = [o.split("=", 1)[0].strip() for o in ops]
+            if any(k in _SYSCTL_CRITICAL_KEYS for k in keys):
+                return OpClass.DESTRUCTIVE, "writing this kernel parameter can wedge the host or sever networking"
+
+    # --- psql / mysql / mariadb: destructive SQL inside -c / -e.
+    if verb in ("psql", "mysql", "mariadb"):
+        bodies = _sql_bodies(tokens)
+        if bodies and _SQL_DESTRUCTIVE_RE.search(" ; ".join(bodies)):
+            return OpClass.DESTRUCTIVE, "SQL that drops, truncates, deletes, or alters data can destroy it"
+
     return None
 
 
@@ -765,6 +1173,15 @@ def _classify_single(command: str, full_line: str) -> tuple[OpClass, str]:
         if pattern.search(stripped) or pattern.search(full_line):
             return OpClass.DESTRUCTIVE, reason
 
+    # 1c) Flag/argument-aware READ vs WRITE for tools whose risk is carried in
+    #     flags or a SQL/command argument rather than a sub-verb token (rsync,
+    #     sysctl, exportfs, crontab, at, auditctl, semanage, grubby, modprobe,
+    #     psql/mysql/mariadb). Destructive forms already escalated in 1a.
+    if core_for_argv:
+        fb = _classify_flagbased(core_for_argv, stripped)
+        if fb is not None:
+            return fb
+
     if not tokens:
         # Unparseable quoting — we cannot prove it is safe. Default-deny: an
         # unknown write-shape floors at WRITE; if it also looks destructive we
@@ -801,9 +1218,30 @@ def _classify_single(command: str, full_line: str) -> tuple[OpClass, str]:
         for wp in _SUBCMD_OVERRIDE_WRITE_PATTERNS:
             if wp.search(stripped):
                 return OpClass.WRITE, f"{verb} invoked with a state-changing operation"
-        # find the first token that is a known sub-verb
-        for tok in core[1:]:
+        sub_tokens = list(core[1:])
+        # podman/buildah `<noun> <verb>` grammar: the VERB governs, not the noun.
+        # If the first non-flag sub-token is a known object noun AND a following
+        # non-flag verb token exists, resolve classification on the verb (so
+        # `podman image pull`->pull(WRITE), `podman image ls`->ls(READ), instead
+        # of leaking to the noun `image`'s READ mapping). Destructive noun-verb
+        # forms (rm/rmi/prune) were already escalated in _classify_argv.
+        if verb in _CONTAINER_NOUNS:
+            nouns = _CONTAINER_NOUNS[verb]
+            first_idx = next(
+                (i for i, t in enumerate(sub_tokens) if not t.startswith("-")),
+                None,
+            )
+            if first_idx is not None and _argv0(sub_tokens[first_idx]) in nouns:
+                rest = sub_tokens[first_idx + 1:]
+                if any(not t.startswith("-") for t in rest):
+                    sub_tokens = rest
+        # find the first token that is a known sub-verb. Long options may arrive
+        # as `--flag=value`; fall back to the flag base so e.g. `grubby
+        # --info=ALL` and `firewall-cmd --query-service=ssh` still resolve.
+        for tok in sub_tokens:
             key = tok
+            if key not in sub_map and tok.startswith("--") and "=" in tok:
+                key = tok.split("=", 1)[0]
             if key in sub_map:
                 cls = sub_map[key]
                 return cls, f"{verb} {key} classified as {cls.value}"

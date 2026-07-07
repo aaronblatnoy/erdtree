@@ -66,6 +66,53 @@ try:
 except Exception:  # noqa: BLE001 — docs is optional; absence must never crash startup.
     pass
 
+# Register the Phase 13 tools (self-register on import). 44 additional tool
+# modules; each calls registry.register(...) at import time.
+import core.tools.aide            # noqa: E402,F401
+import core.tools.at              # noqa: E402,F401
+import core.tools.audit           # noqa: E402,F401
+import core.tools.bond            # noqa: E402,F401
+import core.tools.buildah         # noqa: E402,F401
+import core.tools.chrony          # noqa: E402,F401
+import core.tools.cron            # noqa: E402,F401
+import core.tools.crypto_policies  # noqa: E402,F401
+import core.tools.dnf_modules     # noqa: E402,F401
+import core.tools.dns             # noqa: E402,F401
+import core.tools.fapolicyd       # noqa: E402,F401
+import core.tools.grub            # noqa: E402,F401
+import core.tools.hostname        # noqa: E402,F401
+import core.tools.httpd           # noqa: E402,F401
+import core.tools.kernel_modules  # noqa: E402,F401
+import core.tools.locale          # noqa: E402,F401
+import core.tools.lvm             # noqa: E402,F401
+import core.tools.mariadb         # noqa: E402,F401
+import core.tools.nfs             # noqa: E402,F401
+import core.tools.nftables        # noqa: E402,F401
+import core.tools.nginx           # noqa: E402,F401
+import core.tools.nmcli           # noqa: E402,F401
+import core.tools.pam             # noqa: E402,F401
+import core.tools.perf            # noqa: E402,F401
+import core.tools.performance     # noqa: E402,F401
+import core.tools.podman          # noqa: E402,F401
+import core.tools.postgresql      # noqa: E402,F401
+import core.tools.quota           # noqa: E402,F401
+import core.tools.restic          # noqa: E402,F401
+import core.tools.routing         # noqa: E402,F401
+import core.tools.rpm             # noqa: E402,F401
+import core.tools.rsync           # noqa: E402,F401
+import core.tools.samba           # noqa: E402,F401
+import core.tools.selinux         # noqa: E402,F401
+import core.tools.sosreport       # noqa: E402,F401
+import core.tools.ssh_keys        # noqa: E402,F401
+import core.tools.sssd            # noqa: E402,F401
+import core.tools.stratis         # noqa: E402,F401
+import core.tools.subscription    # noqa: E402,F401
+import core.tools.sysctl          # noqa: E402,F401
+import core.tools.systemd_timers  # noqa: E402,F401
+import core.tools.tar             # noqa: E402,F401
+import core.tools.tuned           # noqa: E402,F401
+import core.tools.virsh           # noqa: E402,F401
+
 
 # --------------------------------------------------------------------------- #
 # Configuration (env-driven; I6 — tier value is opaque to the framework)       #

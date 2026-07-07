@@ -285,6 +285,29 @@ class TestRegistryAndSchemas(unittest.TestCase):
         "network", "firewall", "users", "disk", "processes", "hardware", "files",
         # the docs reference tool
         "docs",
+        # --- RHEL-9 tool surface (44 tools) ---
+        # security & SELinux
+        "selinux", "audit", "ssh_keys", "crypto_policies",
+        # storage
+        "lvm", "stratis", "nfs", "samba", "quota",
+        # networking
+        "nmcli", "bond", "dns", "routing", "nftables",
+        # containers & virtualization
+        "podman", "buildah", "virsh",
+        # scheduling & time
+        "cron", "systemd_timers", "chrony", "at",
+        # system configuration
+        "sysctl", "kernel_modules", "grub", "tuned", "locale", "hostname",
+        # package & subscription
+        "dnf_modules", "rpm", "subscription",
+        # performance & monitoring
+        "performance", "perf", "sosreport",
+        # web & database services
+        "httpd", "nginx", "postgresql", "mariadb",
+        # backup & archive
+        "rsync", "tar", "restic",
+        # security compliance
+        "sssd", "pam", "aide", "fapolicyd",
     }
 
     def test_registry_has_full_set(self) -> None:
@@ -294,12 +317,12 @@ class TestRegistryAndSchemas(unittest.TestCase):
             f"registry mismatch: missing {self._EXPECTED - tools}, "
             f"extra {tools - self._EXPECTED}",
         )
-        # The full 10 operator tools + docs == 11 entries.
-        self.assertEqual(len(registry.list_tools()), 11)
+        # The original 11 (10 operator tools + docs) plus the 44 RHEL-9 tools.
+        self.assertEqual(len(registry.list_tools()), 55)
 
     def test_schemas_build_clean(self) -> None:
         schemas = registry_schemas(registry)
-        self.assertEqual(len(schemas), 11)
+        self.assertEqual(len(schemas), 55)
         for s in schemas:
             self.assertIn("name", s)
             self.assertIn("description", s)

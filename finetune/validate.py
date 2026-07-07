@@ -21,7 +21,7 @@ Report
 
 Exit codes
 ----------
-  0   MISS rate <= 0.5%, zero I2 violations, all 11 tools covered.
+  0   MISS rate <= 0.5%, zero I2 violations, all 55 tools covered.
   1   MISS rate > 0.5%, or any I2 violation, or any tool has zero valid calls.
   2   Bad arguments (empty path, unreadable file, etc.).
 
