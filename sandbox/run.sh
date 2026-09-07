@@ -45,12 +45,12 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 GPU_ARGS=()
 if command -v nvidia-smi >/dev/null 2>&1; then
   SMI="$(command -v nvidia-smi)"
-  ML="$(ldconfig -p 2>/dev/null | awk '/libnvidia-ml.so.1/{print $NF; exit}')"
+  ML="$(ldconfig -p 2>/dev/null | awk '/libnvidia-ml.so.1/{print $NF}' | head -n1 || true)"
   GPU_ARGS+=(-v "$SMI":/usr/bin/nvidia-smi:ro)
-  [ -n "$ML" ] && GPU_ARGS+=(-v "$ML":"$ML":ro)
+  if [ -n "$ML" ]; then GPU_ARGS+=(-v "$ML":"$ML":ro); fi
   for d in /dev/nvidiactl /dev/nvidia0 /dev/nvidia1 /dev/nvidia2 /dev/nvidia3 \
            /dev/nvidia-uvm /dev/nvidia-uvm-tools; do
-    [ -e "$d" ] && GPU_ARGS+=(--device "$d")
+    if [ -e "$d" ]; then GPU_ARGS+=(--device "$d"); fi
   done
 fi
 
