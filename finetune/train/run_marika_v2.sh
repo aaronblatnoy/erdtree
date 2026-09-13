@@ -13,6 +13,7 @@ export NCCL_SHM_DISABLE=1
 export NCCL_NET=Socket
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export TOKENIZERS_PARALLELISM=false
-nohup venv/bin/accelerate launch --config_file fsdp_config.yaml train_marika_v2.py \
+CONFIG="${CONFIG:-fsdp_offload_config.yaml}"   # QUANT=1 CONFIG=fsdp_config.yaml for the NF4 path
+nohup venv/bin/accelerate launch --config_file "$CONFIG" train_marika_v2.py \
   > train_marika_v2.log 2>&1 &
 echo "PID $! -- tail -f ~/erdtree-train/train_marika_v2.log"

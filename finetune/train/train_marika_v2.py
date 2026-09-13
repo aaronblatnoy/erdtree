@@ -13,7 +13,7 @@ Smoke mode: SMOKE=1 runs 10 steps on 32 records.
 import json, os
 
 SMOKE = os.environ.get("SMOKE") == "1"
-MAX_SEQ = int(os.environ.get("MAX_SEQ", 8192))
+MAX_SEQ = int(os.environ.get("MAX_SEQ", 6144))  # p99 of traces_v2 is 5.3k tokens
 DATA = os.path.expanduser(
     os.environ.get("DATA", "~/erdtree-train/data/traces_v2.jsonl"))
 OUT = os.path.expanduser(
@@ -35,12 +35,28 @@ bnb = BitsAndBytesConfig(
     bnb_4bit_compute_dtype=torch.bfloat16,
     bnb_4bit_quant_storage=torch.bfloat16,  # required for FSDP to shard quantized weights
 )
-model = AutoModelForCausalLM.from_pretrained(
-    MODEL,
-    quantization_config=bnb,
-    dtype=torch.bfloat16,
-    attn_implementation="sdpa",
-)
+# Each rank loads onto ITS OWN card (otherwise both ranks land on cuda:0 and the
+# second one OOMs before FSDP ever gets to shard).
+LOCAL_RANK = int(os.environ.get("LOCAL_RANK", 0))
+torch.cuda.set_device(LOCAL_RANK)
+# QUANT=1 (default): NF4 QLoRA, every rank loads a full copy on its own card
+# before FSDP shards it.  On the 8 GB cards that copy does not fit for a 7B
+# (un-quantized embed+lm_head alone are ~2.2 GB), so the default here is
+# QUANT=0: bf16 weights, rank 0 loads to host RAM (fsdp_cpu_ram_efficient_loading),
+# other ranks start on meta, and FSDP keeps parameters offloaded to CPU
+# (fsdp_offload_config.yaml).  Slower per step, but it fits and it is the same
+# path the Radagon MoE run uses.
+QUANT = os.environ.get("QUANT", "0") == "1"
+if QUANT:
+    model = AutoModelForCausalLM.from_pretrained(
+        MODEL, quantization_config=bnb, dtype=torch.bfloat16,
+        attn_implementation="sdpa", device_map={"": LOCAL_RANK},
+    )
+else:
+    model = AutoModelForCausalLM.from_pretrained(
+        MODEL, dtype=torch.bfloat16, attn_implementation="sdpa",
+        low_cpu_mem_usage=True,
+    )
 model.config.use_cache = False
 
 peft_config = LoraConfig(
@@ -72,7 +88,7 @@ trainer = SFTTrainer(
         max_length=MAX_SEQ,
         per_device_train_batch_size=1,
         gradient_accumulation_steps=8,      # x2 GPUs = global batch 16
-        num_train_epochs=3,
+        num_train_epochs=int(os.environ.get("EPOCHS", 2)),  # 2 on black-sky: ~18 s/sample measured, 3 epochs would be ~4 days
         max_steps=10 if SMOKE else -1,
         learning_rate=1e-4,
         lr_scheduler_type="cosine",
@@ -82,8 +98,9 @@ trainer = SFTTrainer(
         save_steps=25,
         save_total_limit=3,
         output_dir=OUT,
-        optim="adamw_8bit",
+        optim="adamw_8bit" if QUANT else "adamw_torch",
         bf16=True,
+        use_liger_kernel=True,  # fused linear+cross-entropy: never materialises the 152k-vocab logits
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
         seed=42,

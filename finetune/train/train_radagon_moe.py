@@ -36,7 +36,7 @@ Smoke mode: SMOKE=1 runs 10 steps on 32 records.
 import json, os, re
 
 SMOKE = os.environ.get("SMOKE") == "1"
-MAX_SEQ = int(os.environ.get("MAX_SEQ", 8192))
+MAX_SEQ = int(os.environ.get("MAX_SEQ", 6144))  # p99 of traces_v2 is 5.3k tokens
 DATA = os.path.expanduser(
     os.environ.get("DATA", "~/erdtree-train/data/traces_v2.jsonl"))
 OUT = os.path.expanduser(
@@ -185,6 +185,7 @@ trainer = SFTTrainer(
         # avoided here for the same reason 4-bit weights are.
         optim="adamw_torch",
         bf16=True,
+        use_liger_kernel=True,  # fused loss where supported; avoids the 152k-vocab fp32 logits copy
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
         seed=42,
