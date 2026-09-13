@@ -43,8 +43,9 @@ OUT = os.path.expanduser(
     os.environ.get("OUT", "~/erdtree-train/out/radagon-moe-lora"))
 
 import torch
+from torch.nn.attention import sdpa_kernel, SDPBackend
 import torch.nn as nn
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from peft import LoraConfig
 from datasets import Dataset
 from trl import SFTTrainer, SFTConfig
@@ -92,12 +93,70 @@ assert _find(_probe, RESP_IDS), (
     "loss masking would zero out every token")
 
 # ------------------------------------------------------------------ the model
+# Single process (no FSDP / ZeRO): accelerate's device_map spreads whole layers
+# over cuda:0, cuda:1 and host RAM; offloaded layers stream to the GPU per pass.
+# The 60 GB bf16 MoE mostly lives in RAM; only ~10 GB of layers stay resident.
+def explicit_layout(n_layers: int, on0: int, on1: int) -> dict:
+    """Whole-layer placement: embeddings + first ``on0`` layers on cuda:0, the
+    next ``on1`` layers + final norm + lm_head on cuda:1, the rest in host RAM
+    (streamed per pass).  lm_head MUST be on a GPU: the Liger fused loss runs a
+    Triton kernel on it."""
+    dm = {"model.embed_tokens": 0, "model.rotary_emb": 0}
+    for i in range(n_layers):
+        dm[f"model.layers.{i}"] = 0 if i < on0 else (1 if i < on0 + on1 else "cpu")
+    dm["model.norm"] = 1
+    dm["lm_head"] = 1
+    return dm
+
+class MaskedLMTrainer(SFTTrainer):
+    """Loss over assistant tokens only, computed WITHOUT the full-vocabulary
+    logits tensor: run the decoder, select the positions whose label is not
+    -100 (a few hundred per record), and apply lm_head to just those.  This is
+    what kept the 8 GB cards from OOM-ing at loss time; it also needs no Triton
+    kernels, so it works with layers offloaded to host RAM."""
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        base = model.get_base_model() if hasattr(model, "get_base_model") else model
+        # Batch size is 1 and sequences are unpadded, so an all-ones mask carries no
+        # information; passing None lets SDPA take the memory-efficient causal
+        # kernel instead of materialising heads x T x T scores (2 GB at 6k tokens).
+        am = inputs.get("attention_mask")
+        if am is not None and bool(am.all()):
+            am = None
+        # Never allow the math SDPA kernel (it materialises heads x T x T scores,
+        # 2 GB at 6k tokens).  Flash/efficient/cuDNN all run this shape on sm86.
+        # Calling the decoder submodule bypasses accelerate's autocast wrapper on the
+        # top-level forward, so autocast explicitly: without it the k-bit prep's fp32
+        # norms push fp32 q/k/v into SDPA, which rejects every fast kernel.
+        with torch.autocast("cuda", dtype=torch.bfloat16), sdpa_kernel(
+            [SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.CUDNN_ATTENTION]
+        ):
+            out = base.model(input_ids=inputs["input_ids"], attention_mask=am, use_cache=False)
+        h = out.last_hidden_state
+        labels = inputs["labels"].to(h.device)
+        shift_h, shift_y = h[:, :-1], labels[:, 1:]
+        keep = shift_y != -100
+        logits = base.lm_head(shift_h[keep].to(base.lm_head.weight.dtype)).float()
+        loss_sum = torch.nn.functional.cross_entropy(logits, shift_y[keep], reduction="sum")
+        denom = num_items_in_batch if num_items_in_batch is not None else keep.sum().clamp(min=1)
+        if torch.is_tensor(denom):
+            denom = denom.to(loss_sum.device)
+        loss = (loss_sum / denom).to("cuda:0")  # Trainer expects the loss on the input device
+        return (loss, out) if return_outputs else loss
+
+
+_cfg = AutoConfig.from_pretrained(MODEL)
+ON0 = int(os.environ.get("GPU0_LAYERS", 3))   # layers resident on cuda:0 (plus embeddings)
+ON1 = int(os.environ.get("GPU1_LAYERS", 2))   # layers resident on cuda:1 (plus norm + lm_head)
+device_map = explicit_layout(_cfg.num_hidden_layers, ON0, ON1)
 model = AutoModelForCausalLM.from_pretrained(
-    MODEL,
-    dtype=torch.bfloat16,
-    attn_implementation="sdpa",
-    low_cpu_mem_usage=True,
+    MODEL, dtype=torch.bfloat16, attn_implementation="sdpa",
+    device_map=device_map, max_memory={0: "7GiB", 1: "7GiB", "cpu": "110GiB"},
 )
+_probe_layer = model.model.layers[-1]
+_exec = getattr(getattr(_probe_layer, "_hf_hook", None), "execution_device", None)
+print(f"offloaded layer execution device: {_exec}", flush=True)
+print(f"layout: cuda:0 embed+{ON0} layers, cuda:1 {ON1} layers+head, cpu {_cfg.num_hidden_layers-ON0-ON1} layers", flush=True)
 model.config.use_cache = False
 if hasattr(model.config, "output_router_logits"):
     model.config.output_router_logits = False
@@ -159,7 +218,7 @@ if SMOKE:
     records = records[:32]
 ds = Dataset.from_list(records)
 
-trainer = SFTTrainer(
+trainer = MaskedLMTrainer(
     model=model,
     processing_class=tokenizer,
     train_dataset=ds,
@@ -185,7 +244,6 @@ trainer = SFTTrainer(
         # avoided here for the same reason 4-bit weights are.
         optim="adamw_torch",
         bf16=True,
-        use_liger_kernel=True,  # fused loss where supported; avoids the 152k-vocab fp32 logits copy
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
         seed=42,
@@ -216,6 +274,16 @@ def masked_collator(features):
 
 
 trainer.data_collator = masked_collator
+
+# prepare_model_for_kbit_training upcasts embed_tokens and lm_head to fp32
+# (+1.1 GB on each card for a 152k vocab).  Put them back to bf16; the tiny
+# norms stay fp32.  LoRA params stay as PEFT made them.
+_n = 0
+for _name, _p in trainer.model.named_parameters():
+    if _p.dtype == torch.float32 and ("embed_tokens" in _name or "lm_head" in _name):
+        _p.data = _p.data.to(torch.bfloat16); _n += 1
+print(f"recast {_n} large fp32 params to bf16", flush=True)
+torch.cuda.empty_cache()
 
 resume = (not SMOKE) and os.path.isdir(OUT) and any(
     d.startswith("checkpoint-") for d in os.listdir(OUT))

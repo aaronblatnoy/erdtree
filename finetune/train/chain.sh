@@ -5,21 +5,20 @@
 # Stop Ollama first. Each stage auto-resumes from checkpoints if re-run.
 set -uo pipefail
 cd ~/erdtree-train
-export NCCL_P2P_DISABLE=1 NCCL_SHM_DISABLE=1 NCCL_NET=Socket
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True TOKENIZERS_PARALLELISM=false OMP_NUM_THREADS=8
 stamp() { echo "[$(date '+%F %T')] $*"; }
 
 stamp "stage 1: marika v2 (Qwen2.5-7B) full run"
-venv/bin/accelerate launch --config_file fsdp_offload_config.yaml train_marika_v2.py > train_marika_v2.log 2>&1
+venv/bin/python train_marika_v2.py > train_marika_v2.log 2>&1
 rc=$?; stamp "marika v2 exit $rc"
 [ $rc -eq 0 ] || { stamp "stopping chain: marika v2 failed"; exit $rc; }
 
 stamp "stage 2: radagon smoke (32 records)"
-SMOKE=1 venv/bin/accelerate launch --config_file fsdp_offload_config.yaml train_radagon_moe.py > train_radagon_smoke.log 2>&1
+SMOKE=1 venv/bin/python train_radagon_moe.py > train_radagon_smoke.log 2>&1
 rc=$?; stamp "radagon smoke exit $rc"
 [ $rc -eq 0 ] || { stamp "stopping chain: radagon smoke failed, see train_radagon_smoke.log"; exit $rc; }
 
 stamp "stage 3: radagon full run"
-venv/bin/accelerate launch --config_file fsdp_offload_config.yaml train_radagon_moe.py > train_radagon_moe.log 2>&1
+venv/bin/python train_radagon_moe.py > train_radagon_moe.log 2>&1
 rc=$?; stamp "radagon exit $rc"
 stamp "chain done"

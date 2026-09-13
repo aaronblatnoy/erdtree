@@ -47,6 +47,6 @@ case "$BACKEND" in
 esac
 
 echo "backend: $BACKEND"
-nohup venv/bin/accelerate launch "${LAUNCH_ARGS[@]}" train_radagon_moe.py \
+nohup venv/bin/python train_radagon_moe.py   # single-process device_map layout; BACKEND kept only for the log line \
   > train_radagon_moe.log 2>&1 &
 echo "PID $! -- tail -f ~/erdtree-train/train_radagon_moe.log"
