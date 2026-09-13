@@ -194,11 +194,51 @@ _PY_TYPE_TO_JSON: dict[type, str] = {
 }
 
 
+_DESC_MAX = 48  # compact schemas: the prompt carries many tools every turn
+
+
+def _compact(text: str, limit: int = _DESC_MAX) -> str:
+    """First clause of a description, parenthetical defaults dropped, capped.
+
+    Argument and operation descriptions are for the caller's benefit; the
+    prompt budget is shared by 55 tools, so keep each line short.
+    """
+    t = re.sub(r"\s*\((?:default|defaults|e\.g\.|i\.e\.)[^)]*\)", "", text or "").strip()
+    t = re.split(r"(?<=[.;])\s", t, maxsplit=1)[0].rstrip(".;")
+    if len(t) > limit:
+        t = t[: limit - 1].rsplit(" ", 1)[0].rstrip(",;:") + "\u2026"
+    return t
+
+
+# Tools whose domains overlap.  The hint is appended to the description so the
+# schema itself says which tool a request belongs to (kept short, I2-clean).
+_TOOL_HINTS: dict[str, str] = {
+    "firewall": "Use for zones, services, ports and reload (firewalld); not raw nft rules.",
+    "nftables": "Raw nft ruleset only; firewalld zones/services/ports belong to 'firewall'.",
+    "services": "Any systemd unit: status/start/stop/restart/enable/logs, including sshd, sssd, smb, httpd, nginx.",
+    "cron": "crontab and /etc/cron.d entries; systemd timers belong to 'systemd_timers', one-off jobs to 'at'.",
+    "systemd_timers": "systemd timer units and systemd-run; crontab entries belong to 'cron'.",
+    "at": "One-off deferred jobs only; recurring schedules belong to 'cron' or 'systemd_timers'.",
+    "processes": "Individual processes: list/find/kill/renice; system-wide load and IO metrics belong to 'performance'.",
+    "performance": "System-wide CPU/memory/IO/load metrics over time; single processes belong to 'processes', counters to 'perf'.",
+    "perf": "Hardware counters and profiling of a command or PID; general metrics belong to 'performance'.",
+    "dns": "Resolution and record lookups (dig/host/resolv.conf); interface IPs belong to 'network', profiles to 'nmcli'.",
+    "network": "Interfaces, addresses, link state and connectivity; NetworkManager profiles belong to 'nmcli'.",
+    "nmcli": "NetworkManager connection profiles; live interface state belongs to 'network'.",
+    "logs": "journalctl and dmesg; audit records belong to 'audit'.",
+    "audit": "Kernel audit rules and ausearch/aureport; general logs belong to 'logs'.",
+    "packages": "dnf install/remove/update/search; direct .rpm files and rpm -q/-V belong to 'rpm'.",
+    "rpm": "Local .rpm files and rpm database queries/verification; repository installs belong to 'packages'.",
+    "disk": "Block devices, partitions and filesystems; LVM objects belong to 'lvm'.",
+    "lvm": "PVs, VGs and LVs; plain partitions and filesystems belong to 'disk'.",
+}
+
+
 def _arg_to_json_schema(arg: ArgSpec) -> dict[str, Any]:
     json_type = _PY_TYPE_TO_JSON.get(arg.type, "string")
     prop: dict[str, Any] = {"type": json_type}
     if arg.description:
-        prop["description"] = arg.description
+        prop["description"] = _compact(arg.description)
     if json_type == "array":
         # Conservative: list-of-strings is the only list shape any core tool
         # uses (e.g. packages.packages).  Items typed as string keeps the
@@ -217,11 +257,17 @@ def tool_to_function_schema(spec: ToolSpec) -> dict[str, Any]:
     selected op does not need).  Per-op required enforcement happens in
     :func:`validate_arguments` once the operation is known.
     """
+    # The operation legend is the single most useful line in the schema: it is
+    # the only place the caller learns what each operation does.
+    legend = "; ".join(
+        f"{name}: {_compact(spec.ops[name].description, 36)}" if spec.ops[name].description else name
+        for name in sorted(spec.ops.keys())
+    )
     properties: dict[str, Any] = {
         "operation": {
             "type": "string",
             "enum": sorted(spec.ops.keys()),
-            "description": "The operation to perform.",
+            "description": legend,
         }
     }
     # Union every op's args into the property set.
@@ -240,9 +286,13 @@ def tool_to_function_schema(spec: ToolSpec) -> dict[str, Any]:
         "required": ["operation"],
         "additionalProperties": False,
     }
+    description = _compact(spec.description, 90)
+    hint = _TOOL_HINTS.get(spec.name)
+    if hint:
+        description = f"{description}. {hint}"
     return {
         "name": spec.name,
-        "description": spec.description,
+        "description": description,
         "parameters": parameters,
     }
 

@@ -1,15 +1,23 @@
-"""Radagon SFT: FSDP QLoRA fine-tune of Qwen2.5-7B-Instruct across both 3060 Tis.
+"""Marika v2 SFT: FSDP QLoRA fine-tune of Qwen2.5-7B-Instruct across both 3060 Tis.
 
-Launch via accelerate (see run_radagon_fsdp.sh) — NOT directly with python.
+Launch via accelerate (see run_marika_v2.sh) -- NOT directly with python.
 4-bit NF4 weights with bf16 quant storage (required for FSDP sharding),
 LoRA on attention+MLP, gradient checkpointing, loss on assistant turns only.
+
+Supersedes train_radagon_fsdp.py (same file, renamed with git mv). Radagon now
+means the Qwen3-30B-A3B MoE run in train_radagon_moe.py.
+
+Data: ~/erdtree-train/data/traces_v2.jsonl (messages + tools JSONL, ~5.7k records).
 Smoke mode: SMOKE=1 runs 10 steps on 32 records.
 """
 import json, os
 
 SMOKE = os.environ.get("SMOKE") == "1"
-MAX_SEQ = 15360
-OUT = os.path.expanduser("~/erdtree-train/out/radagon-qlora")
+MAX_SEQ = int(os.environ.get("MAX_SEQ", 8192))
+DATA = os.path.expanduser(
+    os.environ.get("DATA", "~/erdtree-train/data/traces_v2.jsonl"))
+OUT = os.path.expanduser(
+    os.environ.get("OUT", "~/erdtree-train/out/marika-v2-qlora"))
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
@@ -17,7 +25,7 @@ from peft import LoraConfig
 from datasets import Dataset
 from trl import SFTTrainer, SFTConfig
 
-MODEL = "Qwen/Qwen2.5-7B-Instruct"
+MODEL = os.environ.get("MODEL", "Qwen/Qwen2.5-7B-Instruct")
 tokenizer = AutoTokenizer.from_pretrained(MODEL)
 
 bnb = BitsAndBytesConfig(
@@ -30,7 +38,7 @@ bnb = BitsAndBytesConfig(
 model = AutoModelForCausalLM.from_pretrained(
     MODEL,
     quantization_config=bnb,
-    torch_dtype=torch.bfloat16,
+    dtype=torch.bfloat16,
     attn_implementation="sdpa",
 )
 model.config.use_cache = False
@@ -42,8 +50,11 @@ peft_config = LoraConfig(
 )
 
 records = []
-with open(os.path.expanduser("~/erdtree-train/data/traces.jsonl")) as f:
+with open(DATA) as f:
     for line in f:
+        line = line.strip()
+        if not line:
+            continue
         r = json.loads(line)
         records.append({"text": tokenizer.apply_chat_template(
             r["messages"], tools=r.get("tools"), tokenize=False)})
@@ -60,8 +71,8 @@ trainer = SFTTrainer(
         dataset_text_field="text",
         max_length=MAX_SEQ,
         per_device_train_batch_size=1,
-        gradient_accumulation_steps=8,      # x2 GPUs = global batch 16, same as Marika
-        num_train_epochs=1,
+        gradient_accumulation_steps=8,      # x2 GPUs = global batch 16
+        num_train_epochs=3,
         max_steps=10 if SMOKE else -1,
         learning_rate=1e-4,
         lr_scheduler_type="cosine",
@@ -80,16 +91,21 @@ trainer = SFTTrainer(
     ),
 )
 
-# Mask loss to assistant turns (Qwen ChatML markers). TRL 0.24 removed
+# Mask loss to assistant turns (Qwen2.5 ChatML markers). TRL 0.24 removed
 # DataCollatorForCompletionOnlyLM, so re-implement its span logic here.
+# Token ids are derived from the live tokenizer, never hardcoded.
 RESP_IDS = tokenizer("<|im_start|>assistant\n", add_special_tokens=False).input_ids
 END_IDS = tokenizer("<|im_end|>", add_special_tokens=False).input_ids
+assert RESP_IDS and END_IDS, "empty assistant/end marker ids for this tokenizer"
+
 
 def _find(seq, pat):
     n = len(pat)
     return [i for i in range(len(seq) - n + 1) if seq[i:i+n] == pat]
 
+
 _base_collator = trainer.data_collator
+
 
 def masked_collator(features):
     batch = _base_collator(features)
@@ -108,6 +124,7 @@ def masked_collator(features):
             if not keep:
                 labels[b, i] = -100
     return batch
+
 
 trainer.data_collator = masked_collator
 

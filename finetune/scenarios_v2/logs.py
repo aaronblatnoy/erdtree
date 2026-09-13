@@ -1,0 +1,88 @@
+"""finetune/scenarios_v2/logs.py — corpus v2 scenarios for 'logs'."""
+from finetune.scenarios_v2 import V2
+
+SCENARIOS_V2 = [
+    # tail (4)
+    V2(id="logs-tail-v2-0001", tool="logs", operation="tail", complexity="single",
+       user_input="Tail the last 30 lines of the nginx unit.",
+       args={"operation": "tail", "unit": "nginx.service", "lines": 30},
+       answer="Sep 12 08:01:02 web03 nginx[1122]: worker process started\nSep 12 08:01:44 web03 nginx[1122]: 200 GET /health"),
+    V2(id="logs-tail-v2-0002", tool="logs", operation="tail", complexity="diagnostic",
+       user_input="Requests to the app are hanging right now — what's the most recent thing sshd or the app unit logged?",
+       args={"operation": "tail", "unit": "app.service", "lines": 50},
+       answer="Sep 12 09:14:20 app02 app[880]: worker timeout after 30s\nSep 12 09:14:20 app02 app[880]: restarting worker pid 881"),
+    V2(id="logs-tail-v2-0003", tool="logs", operation="tail", complexity="single",
+       user_input="show the last 100 lines of the journal",
+       args={"operation": "tail", "lines": 100},
+       answer="Sep 12 09:20:01 host01 CRON[2210]: (root) CMD (run-parts /etc/cron.hourly)\nSep 12 09:20:03 host01 sshd[2214]: Accepted publickey for opuser"),
+    V2(id="logs-tail-v2-0004", tool="logs", operation="tail", complexity="multi",
+       user_input="Tail the httpd unit for the newest entries, then check whether the service is still active.",
+       args={"operation": "tail", "unit": "httpd.service", "lines": 40},
+       answer="Sep 12 09:22:10 web01 httpd[990]: [notice] caught SIGTERM, shutting down\nSep 12 09:22:11 web01 httpd[990]: server stopped"),
+
+    # since (2)
+    V2(id="logs-since-v2-0001", tool="logs", operation="since", complexity="single",
+       user_input="Pull journal entries for postgresql since 2 hours ago.",
+       args={"operation": "since", "since": "2 hours ago", "unit": "postgresql.service"},
+       answer="Sep 12 07:30:11 db01 postgres[512]: checkpoint starting: time\nSep 12 07:45:02 db01 postgres[512]: checkpoint complete: wrote 340 buffers"),
+    V2(id="logs-since-v2-0002", tool="logs", operation="since", complexity="diagnostic",
+       user_input="The billing job failed around 06:00 this morning — what does the journal show from that time onward, capped at 300 lines?",
+       args={"operation": "since", "since": "2026-09-12 06:00:00", "lines": 300},
+       answer="Sep 12 06:00:14 batch01 billing[441]: job run_daily_close started\nSep 12 06:02:55 batch01 billing[441]: ERROR ledger mismatch on account 88213"),
+
+    # boot_errors (4)
+    V2(id="logs-boot_errors-v2-0001", tool="logs", operation="boot_errors", complexity="single",
+       user_input="Show me error-level messages from the current boot.",
+       args={"operation": "boot_errors"},
+       answer="Sep 12 06:00:41 host01 kernel: nvme0: I/O error, dev nvme0n1, sector 812002\nSep 12 06:01:02 host01 systemd[1]: fstrim.service: main process exited, status=1"),
+    V2(id="logs-boot_errors-v2-0002", tool="logs", operation="boot_errors", complexity="diagnostic",
+       user_input="This box came back up on its own overnight — were there any errors logged during that boot?",
+       args={"operation": "boot_errors"},
+       answer="Sep 12 03:12:00 host07 kernel: EDAC MC0: 1 CE memory read error\nSep 12 03:12:44 host07 systemd[1]: Failed to start Load Kernel Modules"),
+    V2(id="logs-boot_errors-v2-0003", tool="logs", operation="boot_errors", complexity="single",
+       user_input="Ticket 3390: check the previous boot (-1) for any error-severity entries before we schedule the reboot.",
+       args={"operation": "boot_errors", "boot": "-1"},
+       answer="No entries at priority err or above for boot -1."),
+    V2(id="logs-boot_errors-v2-0004", tool="logs", operation="boot_errors", complexity="multi",
+       user_input="List boot-time errors for boot -2, then check if the sssd service was one of the failures.",
+       args={"operation": "boot_errors", "boot": "-2"},
+       answer="Sep 10 22:00:05 host03 systemd[1]: sssd.service: Failed with result 'exit-code'\nSep 10 22:00:05 host03 sssd[900]: fatal error initializing backend"),
+
+    # dmesg_query (3)
+    V2(id="logs-dmesg_query-v2-0001", tool="logs", operation="dmesg_query", complexity="single",
+       user_input="Grep the kernel ring buffer for 'usb' at warn level.",
+       args={"operation": "dmesg_query", "level": "warn", "grep": "usb"},
+       answer="[  102.331201] usb 1-3: device descriptor read/64, error -71\n[  102.531800] usb 1-3: reset full-speed USB device"),
+    V2(id="logs-dmesg_query-v2-0002", tool="logs", operation="dmesg_query", complexity="diagnostic",
+       user_input="A drive on storage02 might be flaking — check dmesg for anything mentioning sda.",
+       args={"operation": "dmesg_query", "grep": "sda", "lines": 100},
+       answer="[45120.221] sd 2:0:0:0: [sda] tag#12 FAILED Result: hostbyte=DID_OK\n[45120.320] blk_update_request: I/O error, dev sda, sector 991202"),
+    V2(id="logs-dmesg_query-v2-0003", tool="logs", operation="dmesg_query", complexity="single",
+       user_input="Pull the last 500 lines of dmesg at info level or above since yesterday 18:00.",
+       args={"operation": "dmesg_query", "level": "info", "lines": 500, "since": "yesterday 18:00"},
+       answer="[91002.100] CPU1: Package temperature above threshold\n[91050.882] thermal thermal_zone0: critical temperature reached"),
+
+    # dmesg_errors (5)
+    V2(id="logs-dmesg_errors-v2-0001", tool="logs", operation="dmesg_errors", complexity="single",
+       user_input="Show kernel error-level messages.",
+       args={"operation": "dmesg_errors"},
+       answer="[12002.001] EXT4-fs error (device sdb1): ext4_find_entry: reading directory\n[12002.400] JBD2: I/O error detected"),
+    V2(id="logs-dmesg_errors-v2-0002", tool="logs", operation="dmesg_errors", complexity="diagnostic",
+       user_input="The system logged a hard lock warning to the console earlier — any critical kernel messages that would explain it?",
+       args={"operation": "dmesg_errors"},
+       answer="[80211.552] Kernel panic - not syncing: Fatal exception in interrupt\n[80211.552] CPU: 3 PID: 0 Comm: swapper/3"),
+    V2(id="logs-dmesg_errors-v2-0003", tool="logs", operation="dmesg_errors", complexity="single",
+       user_input="Cap it at 50 lines, just the kernel err/crit/alert/emerg entries.",
+       args={"operation": "dmesg_errors", "lines": 50},
+       answer="No error-level or higher kernel messages found in the last 50 lines."),
+    V2(id="logs-dmesg_errors-v2-0004", tool="logs", operation="dmesg_errors", complexity="multi",
+       user_input="Check dmesg for critical kernel errors, and if there are any, tail the kdump service log too.",
+       args={"operation": "dmesg_errors"},
+       answer="[70011.002] mce: [Hardware Error]: Machine check events logged\n[70011.020] EDAC sbridge: HANDLING MCE MEMORY ERROR"),
+    V2(id="logs-dmesg_errors-v2-0005", tool="logs", operation="dmesg_errors", complexity="single",
+       user_input="Ticket 6650: get the last 200 kernel error lines from host12 before RMA'ing the disk.",
+       args={"operation": "dmesg_errors", "lines": 200},
+       answer="[55011.221] ata3.00: exception Emask 0x0 SAct 0x0 SErr 0x0 action 0x0\n[55011.230] ata3.00: failed command: WRITE FPDMA QUEUED"),
+]
+
+from finetune.scenarios_v2 import check_module; check_module("logs", SCENARIOS_V2)

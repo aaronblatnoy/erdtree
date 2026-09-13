@@ -152,14 +152,47 @@ class AssembleOutcome:
 
 
 def _build_scenario_index(pool: str = "train") -> dict[str, Scenario]:
+    if pool == "v2":
+        from finetune.scenarios_v2 import load_all
+        return {s.id: Scenario(id=s.id, tool=s.tool, operation=s.operation,
+                               permission_class=coreimports.registry.get(s.tool).permission_class_for(s.operation),
+                               complexity=s.complexity, user_input=s.user_input, notes=s.notes)
+                for s in load_all()}
     from finetune.shard import pool_scenarios
     return {s.id: s for s in pool_scenarios(pool)}
+
+
+def iter_v2_judgments() -> Iterator[tuple[str, int, dict]]:
+    """Corpus v2 scenarios carry their own reference call and answer; expose
+    them in the judgment shape so assemble_one is the single trace builder."""
+    from finetune.scenarios_v2 import load_all
+    for i, s in enumerate(load_all(), start=1):
+        args = {k: v for k, v in s.args.items() if k != "operation"}
+        yield "scenarios_v2", i, {"scenario_id": s.id, "tool": s.tool, "operation": s.operation,
+                                   "args": args, "answer": s.answer}
+
+
+_SELECTOR = None
+
+
+def _selected_tools(user_input: str, pin: str) -> list[dict]:
+    """Advertise the per-request selection (core.agent.toolselect), exactly as
+    the REPL does, with the chosen tool pinned so every op stays trainable."""
+    global _SELECTOR
+    if _SELECTOR is None:
+        from core.agent.toolselect import ToolSelector
+        _SELECTOR = ToolSelector(coreimports.registry)
+    names = _SELECTOR.select(user_input, extra=[pin])
+    return coreimports.build_tool_list(coreimports.registry_schemas(coreimports.registry, names))
 
 
 def assemble_one(
     judgment: dict,
     tier: str,
     scenarios_by_id: dict[str, Scenario],
+    *,
+    confirm_turns: bool = True,
+    select_tools: bool = False,
 ) -> AssembleOutcome:
     """Assemble a single trace from one cold judgment, or return a drop."""
     if "__parse_error__" in judgment:
@@ -206,7 +239,7 @@ def assemble_one(
     # 4. Live system prompt + tool list, exactly as generate.py composes them.
     seed = _stable_seed(scenario_id)
     snapshot = make_context(tier, seed)
-    tools = coreimports.live_tool_list()
+    tools = _selected_tools(scenario.user_input, chosen_tool) if select_tools else coreimports.live_tool_list()
     cfg = coreimports.PromptConfig(
         tier_prompt=TIER_PROMPTS[tier],
         snapshot_text=snapshot,
@@ -226,7 +259,7 @@ def assemble_one(
     turns: list[dict] = [user_msg]
 
     # INV-confirm-gate: model the confirm-before-execute turn for NON-READ ops.
-    if opc != coreimports.OpClass.READ:
+    if confirm_turns and opc != coreimports.OpClass.READ:
         cls = opc.value  # "write" | "destructive"
         confirm_prompt = _CONFIRM_PROMPT[cls]
         coreimports.assert_no_ai_language(confirm_prompt, "confirm_prompt")
@@ -303,10 +336,12 @@ def run(args: argparse.Namespace) -> int:
                 return key
         return "other"
 
-    with open(args.out, "w", encoding="utf-8") as out_fh:
-        for _fpath, _line_no, judgment in iter_judgments(args.judgments):
+    source = iter_v2_judgments() if args.pool == "v2" else iter_judgments(args.judgments)
+    with open(args.out, "a" if args.append else "w", encoding="utf-8") as out_fh:
+        for _fpath, _line_no, judgment in source:
             try:
-                outcome = assemble_one(judgment, args.tier, scenarios_by_id)
+                outcome = assemble_one(judgment, args.tier, scenarios_by_id,
+                                       confirm_turns=not args.no_confirm, select_tools=args.select_tools)
             except Exception as exc:  # noqa: BLE001 — never let one bad record abort the stream
                 dropped += 1
                 bucket = f"exception:{type(exc).__name__}"
@@ -356,7 +391,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help=f"Judgments file or directory (default {DEFAULT_JUDGMENTS}).")
     p.add_argument("--out", default=DEFAULT_OUT,
                    help=f"Output JSONL path (default {DEFAULT_OUT}).")
-    p.add_argument("--pool", choices=("train", "eval"), default="train",
+    p.add_argument("--no-confirm", action="store_true",
+                   help="Do not model the confirm exchange (corpus v2: the runtime gate asks, not the model).")
+    p.add_argument("--select-tools", action="store_true",
+                   help="Advertise the per-request tool selection (core.agent.toolselect) instead of all tools.")
+    p.add_argument("--append", action="store_true", help="Append to --out instead of overwriting.")
+    p.add_argument("--pool", choices=("train", "eval", "v2"), default="train",
                    help="Scenario pool the judgments refer to (eval = held-out EVAL_SCENARIOS).")
     p.add_argument("--tier", choices=TIERS, default="radagon",
                    help="Tier (persona/context depth + meta only; never structure).")

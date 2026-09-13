@@ -716,6 +716,7 @@ class Repl:
         episodic: Optional[Any] = None,
         compaction_threshold: int = 0,
         strategy: Optional[UnderstandingStrategy] = None,
+        select_tools: bool = True,
     ) -> None:
         self._registry = registry
         self._responder = responder
@@ -723,6 +724,11 @@ class Repl:
         self._context = context if context is not None else TurnContext()
         self._io = io if io is not None else ConsoleIO(interactive=interactive)
         self._router = router if router is not None else Router(registry)
+        from core.agent.toolselect import ToolSelector
+        self._selector: Optional[ToolSelector] = (
+            ToolSelector(registry) if select_tools else None
+        )
+        self._turn_tools: set[str] = set()
         self._tier_label = tier_label
         self._tier_prompt = tier_prompt
         self._interactive = interactive
@@ -771,7 +777,8 @@ class Repl:
                 pass
 
         snapshot_text = self._context.snapshot_text()
-        tools = self._advertised_tools()
+        self._turn_tools: set[str] = set()
+        tools = self._advertised_tools(user_input)
         # P8 invisible memory: when a TranscriptMemory is wired, the `history`
         # arg is the silently-compacted prior-turn window (recent turns verbatim
         # so deixis resolves; older turns keep only outcomes).  With memory=None
@@ -919,8 +926,11 @@ class Repl:
         outcome: TurnOutcome,
     ) -> None:
         for call in calls:
+            self._turn_tools.add(call.tool)
             command = synthesize_command(call)
             decision = perm.classify(command, self._exec_ctx)
+            # Registry-declared class wins when stricter (never under-gate).
+            decision = perm.escalate(decision, call.permission_class, self._exec_ctx)
 
             cleared, gate_note = self._resolve_gate(decision, command)
 
@@ -1036,10 +1046,16 @@ class Repl:
         except Exception:  # noqa: BLE001 — presentation never breaks a turn
             pass
 
-    def _advertised_tools(self) -> list[dict]:
+    def _advertised_tools(self, user_input: str = "") -> list[dict]:
+        """Tool list for this turn: the per-request selection (toolselect.py),
+        or every registered tool when selection is disabled or the request is
+        empty.  Tools already used earlier in this turn stay pinned."""
         from core.agent.prompt import build_tool_list
 
-        return build_tool_list(self._router.advertised_schemas())
+        if self._selector is None or not user_input:
+            return build_tool_list(self._router.advertised_schemas())
+        names = self._selector.select(user_input, extra=self._turn_tools)
+        return build_tool_list(self._router.advertised_schemas(names))
 
     # ------------------------------------------------------------------ #
     # Live tool-step display (P3) — PRESENTATION ONLY (SC4).               #

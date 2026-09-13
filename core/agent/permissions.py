@@ -1324,6 +1324,29 @@ def classify(command: str, context: ExecContext | None = None) -> Decision:
     )
 
 
+_STRICTNESS = {OpClass.READ: 0, OpClass.WRITE: 1, OpClass.DESTRUCTIVE: 2}
+
+
+def escalate(decision: Decision, declared: OpClass, context: ExecContext | None = None) -> Decision:
+    """Never under-gate: if the tool registry DECLARES a stricter class for the
+    operation than the command-string classifier inferred, re-derive the gate
+    at the declared class.  The string classifier only knows shell shapes; the
+    registry knows what the operation does.  Downgrades are never applied."""
+    if _STRICTNESS.get(declared, 1) <= _STRICTNESS.get(decision.op_class, 0):
+        return decision
+    ctx = context or ExecContext()
+    reason = f"{decision.reason}; the operation is declared {declared.value}"
+    if declared is OpClass.WRITE:
+        if not ctx.interactive:
+            return Decision(OpClass.WRITE, Gate.REFUSE,
+                            f"{reason}; a change needs confirmation and no one is available to confirm")
+        return Decision(OpClass.WRITE, Gate.CONFIRM, reason)
+    if not ctx.interactive:
+        return Decision(OpClass.DESTRUCTIVE, Gate.REFUSE,
+                        f"{reason}; this cannot be done without a person present to confirm it in full")
+    return Decision(OpClass.DESTRUCTIVE, Gate.CONFIRM_TYPED, reason)
+
+
 def confirms_destructive(typed: str | None) -> bool:
     """Return True iff `typed` clears a destructive gate.
 
