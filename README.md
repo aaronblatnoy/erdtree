@@ -8,7 +8,7 @@ Eventually I set up Claude Code on the server so I could talk to it directly. Ty
 
 That's when the question hit me:
 
-**What if Linux just understood English? And what if the model doing the understanding was purpose-built for exactly this?**
+**What if Linux just understood English straight out of the box?**
 
 ---
 
