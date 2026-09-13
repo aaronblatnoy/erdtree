@@ -21,13 +21,13 @@ The corpus feeds downstream fine-tuning on black-sky (TRL/Unsloth); the training
 | `merge_marika.py` | merge the adapter into fp16 safetensors |
 | `export_marika.sh` + `Modelfile.marika` | safetensors -> f16 GGUF (llama.cpp) -> `ollama create marika-ft -q q4_K_M` with the Qwen2.5 chat template and `num_ctx 16384` |
 
-Shipped model: **`marika-ft`** on black-sky (1 epoch over all 2,721 traces, train loss 2.5 to 0.94). `sandbox/run.sh marika` runs it; `sandbox/run.sh marika base` runs the untuned `qwen2.5:3b` for A/B.
+Shipped model: **`marika-ft`** on black-sky and as a standalone download (GGUF + Modelfile) under GitHub Releases, tag `marika-ft-v0.1` (1 epoch over all 2,721 traces, train loss 2.5 to 0.94). `sandbox/run.sh marika` runs it; `sandbox/run.sh marika base` runs the untuned `qwen2.5:3b` for A/B.
 
 Export pitfalls that were hit: a bare `FROM <dir>` Modelfile ships no template or stop tokens (endless babble), Ollama's direct safetensors import produced garbage tokens (convert to GGUF first), and the default 4096 context truncates the ~14k-token 55-tool system prompt (set `num_ctx 16384`).
 
 ## Held-out eval pool
 
-All 2,721 training traces were used for `marika-ft`, so evaluation needs data the model never saw. `finetune/scenarios/eval_pool.py` holds `EVAL_SCENARIOS`: fresh phrasings, 2 per tool, deliberately NOT joined into `ALL_SCENARIOS`, so `generate.py` and `shard.py` (default `--pool train`) can never select them for training. The same GENUINE-LOOP path produces eval traces:
+All 2,721 training traces were used for `marika-ft`, so evaluation needs data the model never saw. `finetune/scenarios/eval_pool.py` holds `EVAL_SCENARIOS`: fresh phrasings, 2 per tool, deliberately NOT joined into `ALL_SCENARIOS`, so `generate.py` and `shard.py` (default `--pool train`) can never select them for training. Current eval set: 100 traces assembled 2026-09-12 (10 of 110 judgments dropped for schema-invalid args; validate PASS, 53 read / 26 write / 21 destructive, all 55 tools). The same GENUINE-LOOP path produces eval traces:
 
 ```bash
 python -m finetune.shard --pool eval --shard-size 28        # finetune/data/eval/prompts/

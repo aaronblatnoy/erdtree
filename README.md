@@ -39,7 +39,7 @@ This is the core of what we're building.
 
 General-purpose LLMs, even strong ones, underperform at the 3B-14B parameter scale on Linux operations tasks. They hallucinate flags, misread log formats, generate plausible-looking commands that are wrong for your specific kernel version or package manager state. We are training models that specialize in exactly this domain: system diagnostics, service management, storage operations, network configuration, log analysis, security hardening.
 
-The models ship baked into the distro. They are not a downloadable weight file. They are not available separately. To use the model, you run the OS. This is intentional -- the model and the system context layer it operates within are co-designed and inseparable.
+The models ship baked into the distro, co-designed with the system context layer they operate in; that pairing is the product. The weights are also published standalone for anyone who wants to run or evaluate them outside the OS: see [Releases](https://github.com/aaronblatnoy/erdtree/releases) for `marika-ft` as a q4_K_M GGUF with an Ollama Modelfile. Standalone, the model is a Qwen2.5-3B that speaks OpenAI-style tool calls and terse operator English; inside Erdtree it gets the live system snapshot, the 55-tool registry, the permission gate, and the audit log.
 
 ---
 
@@ -47,7 +47,7 @@ The models ship baked into the distro. They are not a downloadable weight file. 
 
 | Tier | Name | Model | Target |
 |------|------|-------|--------|
-| 1 | **Linux Marika** | ~3B quantized (first fine-tune shipped: `marika-ft`, Qwen2.5-3B SFT) | Hobbyists, homelabbers |
+| 1 | **Linux Marika** | ~3B quantized (first fine-tune shipped: `marika-ft`, Qwen2.5-3B SFT, [download](https://github.com/aaronblatnoy/erdtree/releases/tag/marika-ft-v0.1)) | Hobbyists, homelabbers |
 | 2 | **Linux Radagon** | 7B-14B specialized | Professional sysadmins, data centers |
 
 *More robust, enterprise-grade distros to come.*
