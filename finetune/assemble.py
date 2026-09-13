@@ -151,8 +151,9 @@ class AssembleOutcome:
     selection_match: bool = False
 
 
-def _build_scenario_index() -> dict[str, Scenario]:
-    return {s.id: s for s in ALL_SCENARIOS}
+def _build_scenario_index(pool: str = "train") -> dict[str, Scenario]:
+    from finetune.shard import pool_scenarios
+    return {s.id: s for s in pool_scenarios(pool)}
 
 
 def assemble_one(
@@ -276,7 +277,7 @@ def assemble_one(
 # --------------------------------------------------------------------------- #
 
 def run(args: argparse.Namespace) -> int:
-    scenarios_by_id = _build_scenario_index()
+    scenarios_by_id = _build_scenario_index(getattr(args, "pool", "train"))
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
 
@@ -355,6 +356,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help=f"Judgments file or directory (default {DEFAULT_JUDGMENTS}).")
     p.add_argument("--out", default=DEFAULT_OUT,
                    help=f"Output JSONL path (default {DEFAULT_OUT}).")
+    p.add_argument("--pool", choices=("train", "eval"), default="train",
+                   help="Scenario pool the judgments refer to (eval = held-out EVAL_SCENARIOS).")
     p.add_argument("--tier", choices=TIERS, default="radagon",
                    help="Tier (persona/context depth + meta only; never structure).")
     return p

@@ -47,7 +47,7 @@ The models ship baked into the distro. They are not a downloadable weight file. 
 
 | Tier | Name | Model | Target |
 |------|------|-------|--------|
-| 1 | **Linux Marika** | ~3B quantized | Hobbyists, homelabbers |
+| 1 | **Linux Marika** | ~3B quantized (first fine-tune shipped: `marika-ft`, Qwen2.5-3B SFT) | Hobbyists, homelabbers |
 | 2 | **Linux Radagon** | 7B-14B specialized | Professional sysadmins, data centers |
 
 *More robust, enterprise-grade distros to come.*
@@ -95,9 +95,10 @@ Active buildout — the agent loop runs end to end on local models today. Not pr
 - Ten system tools (services, packages, logs, network, firewall, users, disk, processes, hardware, files), a hardened permission gate (reads run free, writes confirm, destructive ops need a typed word), and an append-only audit log.
 - Local document retrieval grounded in a real on-box corpus: an offline orchestrator turns the machine's own man pages and Rocky admin docs into a single durable index, so "how do I open a firewall port" returns the actual `firewall-cmd` passage from the docs — built and queried entirely on the box, no network. Paired with an invisible-memory layer (rolling compaction + episodic recall) so sessions never hit a context wall.
 - A throwaway Rocky 9 container sandbox for testing the Marika (3B) and Radagon (7B-14B) tiers, with a seeded playground and real hardware telemetry (GPU / CPU / sensors / fans).
+- The fine-tuning pipeline, end to end: `finetune/` generates label-hidden ShareGPT traces from the live tool registry (2,721 records, all 55 tools, 0 router misses), `finetune/train/` runs QLoRA on black-sky (Unsloth/TRL) and exports a GGUF for Ollama. The first Marika fine-tune, `marika-ft` (Qwen2.5-3B, 1 epoch, train loss 2.5 to 0.94), is what the sandbox's `marika` tier now runs. A held-out eval pool (`finetune/scenarios/eval_pool.py`, never joined into the training set) is being built for tool-call accuracy and confirm-gate evals against the untuned baseline.
 - ~1,900 tests green.
 
-**Still ahead:** per-tier configuration plumbing, the model fine-tuning pipeline, how the reference corpus ships (bundled in the image vs. built on first boot), and the bootable ISO installer.
+**Still ahead:** per-tier configuration plumbing, the Radagon 7B fine-tune (2-GPU FSDP QLoRA staged), held-out evals, how the reference corpus ships (bundled in the image vs. built on first boot), and the bootable ISO installer.
 
 ---
 

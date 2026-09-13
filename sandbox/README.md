@@ -16,7 +16,8 @@ proper Rocky 9 KVM VM becomes the higher-fidelity option.)
 
 ```bash
 sandbox/build.sh                 # build the image once (pulls Rocky 9 base)
-sandbox/run.sh marika            # 3B tier   — gold prompt
+sandbox/run.sh marika            # 3B tier   — gold prompt (fine-tuned marika-ft)
+sandbox/run.sh marika base       # 3B tier on the untuned baseline, for A/B
 sandbox/run.sh radagon           # 7B tier   — red prompt   (PRIMARY)
 sandbox/run.sh radagon 14b       # Radagon at the top of its 7B-14B range
 ```
@@ -28,7 +29,7 @@ You land in the tier's NL prompt. Type plain English; `!cmd` runs one bash comma
 
 | Tier    | Prompt color | Model (in this sandbox) |
 |---------|--------------|-------------------------|
-| marika  | gold         | `qwen2.5:3b`            |
+| marika  | gold         | `marika-ft` (Qwen2.5-3B fine-tuned on Erdtree traces; `marika base` = untuned `qwen2.5:3b`) |
 | radagon | red          | `qwen2.5:7b` (7B–14B range; pass `14b` for the high end) |
 | radahn  | scarlet      | massive / dedicated-infra — **not** a 14B; not runnable here |
 

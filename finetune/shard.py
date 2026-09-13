@@ -32,6 +32,8 @@ from typing import Optional
 
 from finetune.scenarios import ALL_SCENARIOS
 
+POOLS = ("train", "eval")
+
 DATA_DIR = "finetune/data"
 PROMPTS_DIR = os.path.join(DATA_DIR, "prompts")
 JUDGMENTS_DIR = os.path.join(DATA_DIR, "judgments")
@@ -53,19 +55,40 @@ def _round_robin_shards(ids: list[str], shard_size: int) -> list[list[str]]:
     return shards
 
 
-def build(tier: str, shard_size: int, variants: int = 1) -> dict:
-    """Write _shards.json + per-shard prompts-only jsonl; return the plan dict."""
-    os.makedirs(PROMPTS_DIR, exist_ok=True)
-    os.makedirs(JUDGMENTS_DIR, exist_ok=True)
+def pool_scenarios(pool: str) -> list:
+    """Return the scenario list for ``pool``: the training pool (ALL_SCENARIOS)
+    or the HELD-OUT eval pool (finetune.scenarios.eval_pool.EVAL_SCENARIOS,
+    which is deliberately NOT joined into ALL_SCENARIOS so generate.py can
+    never select it for training)."""
+    if pool == "train":
+        return ALL_SCENARIOS
+    from finetune.scenarios.eval_pool import EVAL_SCENARIOS
+    return EVAL_SCENARIOS
 
-    ids = [s.id for s in ALL_SCENARIOS]
-    prompt_by_id = {s.id: s.user_input for s in ALL_SCENARIOS}
+
+def pool_dirs(pool: str) -> tuple[str, str, str]:
+    """(prompts_dir, judgments_dir, shards_json) for ``pool``."""
+    if pool == "train":
+        return PROMPTS_DIR, JUDGMENTS_DIR, SHARDS_JSON
+    base = os.path.join(DATA_DIR, "eval")
+    return os.path.join(base, "prompts"), os.path.join(base, "judgments"), os.path.join(base, "_shards.json")
+
+
+def build(tier: str, shard_size: int, variants: int = 1, pool: str = "train") -> dict:
+    """Write _shards.json + per-shard prompts-only jsonl; return the plan dict."""
+    prompts_dir, judgments_dir, shards_json = pool_dirs(pool)
+    os.makedirs(prompts_dir, exist_ok=True)
+    os.makedirs(judgments_dir, exist_ok=True)
+
+    scenarios = pool_scenarios(pool)
+    ids = [s.id for s in scenarios]
+    prompt_by_id = {s.id: s.user_input for s in scenarios}
 
     shards = _round_robin_shards(ids, shard_size)
 
     # Per-shard prompts-only jsonl — NO tool, NO operation, NO permission_class.
     for i, shard_ids in enumerate(shards):
-        path = os.path.join(PROMPTS_DIR, f"shard-{i}.jsonl")
+        path = os.path.join(prompts_dir, f"shard-{i}.jsonl")
         with open(path, "w", encoding="utf-8") as fh:
             for sid in shard_ids:
                 fh.write(
@@ -77,8 +100,8 @@ def build(tier: str, shard_size: int, variants: int = 1) -> dict:
                     + "\n"
                 )
 
-    plan = {"tier": tier, "variants": variants, "shards": shards}
-    with open(SHARDS_JSON, "w", encoding="utf-8") as fh:
+    plan = {"tier": tier, "variants": variants, "pool": pool, "shards": shards}
+    with open(shards_json, "w", encoding="utf-8") as fh:
         json.dump(plan, fh, ensure_ascii=False, indent=2)
 
     return plan
@@ -92,12 +115,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tier", choices=("marika", "radagon"), default="radagon")
     p.add_argument("--shard-size", type=int, default=30, help="Approx ids per shard (default 30).")
     p.add_argument("--variants", type=int, default=1)
+    p.add_argument("--pool", choices=POOLS, default="train", help="train = ALL_SCENARIOS; eval = held-out EVAL_SCENARIOS.")
     return p
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = build_parser().parse_args(argv)
-    plan = build(args.tier, args.shard_size, args.variants)
+    plan = build(args.tier, args.shard_size, args.variants, args.pool)
     n_shards = len(plan["shards"])
     total = sum(len(s) for s in plan["shards"])
     print(
