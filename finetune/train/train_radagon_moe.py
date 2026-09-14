@@ -148,10 +148,18 @@ class MaskedLMTrainer(SFTTrainer):
 _cfg = AutoConfig.from_pretrained(MODEL)
 ON0 = int(os.environ.get("GPU0_LAYERS", 3))   # layers resident on cuda:0 (plus embeddings)
 ON1 = int(os.environ.get("GPU1_LAYERS", 2))   # layers resident on cuda:1 (plus norm + lm_head)
-device_map = explicit_layout(_cfg.num_hidden_layers, ON0, ON1)
+# SINGLE_GPU=1: one card with enough memory for the whole bf16 model (96 GB+);
+# the rented RTX PRO 6000 / H200 path.  Otherwise the black-sky split layout.
+SINGLE_GPU = os.environ.get("SINGLE_GPU") == "1"
+if SINGLE_GPU:
+    device_map = {"": 0}
+    _mm = None
+else:
+    device_map = explicit_layout(_cfg.num_hidden_layers, ON0, ON1)
+    _mm = {0: "7GiB", 1: "7GiB", "cpu": "110GiB"}
 model = AutoModelForCausalLM.from_pretrained(
     MODEL, dtype=torch.bfloat16, attn_implementation="sdpa",
-    device_map=device_map, max_memory={0: "7GiB", 1: "7GiB", "cpu": "110GiB"},
+    device_map=device_map, max_memory=_mm,
 )
 _probe_layer = model.model.layers[-1]
 _exec = getattr(getattr(_probe_layer, "_hf_hook", None), "execution_device", None)
@@ -227,12 +235,12 @@ trainer = MaskedLMTrainer(
         dataset_text_field="text",
         max_length=MAX_SEQ,
         per_device_train_batch_size=1,
-        gradient_accumulation_steps=8,      # x2 GPUs = global batch 16
-        num_train_epochs=2,
+        gradient_accumulation_steps=int(os.environ.get("GRAD_ACCUM", 16)),
+        num_train_epochs=int(os.environ.get("EPOCHS", 2)),
         max_steps=10 if SMOKE else -1,
         learning_rate=1e-4,
         lr_scheduler_type="cosine",
-        warmup_ratio=0.03,
+        warmup_steps=int(os.environ.get("WARMUP_STEPS", 20)),
         logging_steps=1 if SMOKE else 5,
         save_strategy="no" if SMOKE else "steps",
         save_steps=25,
