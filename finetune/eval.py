@@ -134,7 +134,7 @@ def score_one(model: str, rec: dict, num_ctx: int) -> dict:
         call_id = "call_eval_1"
         msgs = prefix + [
             {"role": "assistant", "content": "", "tool_calls": [{"id": call_id, "type": "function",
-              "function": {"name": name, "arguments": json.dumps(args)}}]},
+              "function": {"name": name, "arguments": args}}]},
             {"role": "tool", "tool_call_id": call_id, "content": reask_invalid_arguments(name, j["err"])},
         ]
         m2 = chat(model, msgs, tools, num_ctx)
