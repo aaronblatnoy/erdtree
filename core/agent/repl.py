@@ -783,9 +783,13 @@ class Repl:
         # arg is the silently-compacted prior-turn window (recent turns verbatim
         # so deixis resolves; older turns keep only outcomes).  With memory=None
         # this is [] — TODAY's behavior EXACTLY (I9, backward-compatible).
+        # History gate: the trained models are single-turn; prior turns are
+        # sent ONLY when the request refers back to them (core/agent/historygate).
+        from core.agent.historygate import needs_history
+
         history = (
             self._memory.compacted_history(self._compaction_threshold)
-            if self._memory is not None
+            if self._memory is not None and needs_history(user_input)
             else []
         )
         # Index into `messages` where THIS turn's new messages begin: everything

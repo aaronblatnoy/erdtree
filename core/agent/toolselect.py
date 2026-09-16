@@ -33,7 +33,10 @@ _WORD = re.compile(r"[a-z0-9_.\-/]+")
 
 
 def _toks(text: str) -> list[str]:
-    return [w for w in _WORD.findall(text.lower()) if w not in _STOP and len(w) > 1]
+    out = [w for w in _WORD.findall(text.lower()) if w not in _STOP and len(w) > 1]
+    if "/" in text and not any(w in text.lower() for w in ("http", "mount", "device", "/dev/")):
+        out.append("path")  # an absolute path in the request is a strong files signal
+    return out
 
 
 def _expand(words: Iterable[str]) -> set[str]:
@@ -50,6 +53,24 @@ def _expand(words: Iterable[str]) -> set[str]:
         if w.endswith("ed"):
             out.add(w[:-2])
     return out
+
+
+# Operator vocabulary the registry text does not contain.  Weighted like a
+# tool name so a plain verb ("delete", "rename") or a path-shaped token lands on
+# the right tool.  Keep this list about words operators actually type.
+_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "files": ("delete", "remove", "rm", "unlink", "rename", "move", "mv", "copy", "cp", "touch", "mkdir",
+              "chmod", "chown", "permissions", "file", "files", "folder", "directory", "path", "junk", "cleanup"),
+    "hostname": ("hostname", "rename", "box", "machine", "host", "name", "fqdn", "hosts"),
+    "services": ("service", "daemon", "unit", "running", "start", "stop", "restart", "reload", "enable", "disable"),
+    "packages": ("install", "uninstall", "upgrade", "update", "package", "dnf", "yum", "rpm"),
+    "processes": ("process", "pid", "kill", "hung", "stuck", "renice", "top"),
+    "disk": ("disk", "space", "full", "mount", "unmount", "partition", "format", "filesystem", "df", "usage"),
+    "logs": ("log", "logs", "journal", "dmesg", "errors", "why", "crash", "crashed", "failing"),
+    "network": ("network", "interface", "ip", "link", "ping", "connectivity", "eth0", "nic"),
+    "users": ("user", "users", "account", "password", "login", "sudo", "group", "wheel"),
+    "docs": ("how", "what", "explain", "difference", "syntax", "meaning", "option", "mean"),
+}
 
 
 class ToolSelector:
@@ -74,6 +95,8 @@ class ToolSelector:
         f: Counter = Counter()
         for w in _expand([spec.name]):
             f[w] += 6
+        for w in _expand(_SYNONYMS.get(spec.name, ())):
+            f[w] += 4
         for w in _expand(_toks(spec.description or "")):
             f[w] += 2
         for op_name, op in spec.ops.items():

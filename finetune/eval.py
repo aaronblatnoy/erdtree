@@ -70,7 +70,13 @@ def i2_ok(text: str) -> bool:
 
 def _norm(v):
     if isinstance(v, str):
-        return v.strip().lower().rstrip("/") or "/"
+        v = v.strip().lower().rstrip("/") or "/"
+        for suf in (".service", ".timer", ".socket"):
+            if v.endswith(suf):
+                v = v[: -len(suf)]
+        return v
+    if isinstance(v, list):
+        return sorted(_norm(x) for x in v)
     return v
 
 

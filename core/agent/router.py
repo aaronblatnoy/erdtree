@@ -215,7 +215,7 @@ def _compact(text: str, limit: int = _DESC_MAX) -> str:
 _TOOL_HINTS: dict[str, str] = {
     "firewall": "Use for zones, services, ports and reload (firewalld); not raw nft rules.",
     "nftables": "Raw nft ruleset only; firewalld zones/services/ports belong to 'firewall'.",
-    "services": "Any systemd unit: status/start/stop/restart/enable/logs, including sshd, sssd, smb, httpd, nginx.",
+    "services": "Generic systemd units. Prefer the dedicated tool when one exists: sssd, samba, httpd, nginx, postgresql, mariadb, nfs, chrony, and systemd_timers for timers.",
     "cron": "crontab and /etc/cron.d entries; systemd timers belong to 'systemd_timers', one-off jobs to 'at'.",
     "systemd_timers": "systemd timer units and systemd-run; crontab entries belong to 'cron'.",
     "at": "One-off deferred jobs only; recurring schedules belong to 'cron' or 'systemd_timers'.",
@@ -515,10 +515,15 @@ class Router:
             try:
                 operation, op_args = validate_arguments(spec, parsed_args)
             except ValueError as exc:
+                detail = str(exc)
+                if "operation" in detail:
+                    # Name the choices: a small model omits or misspells the
+                    # operation far more often than any other argument.
+                    detail += " Valid operations: " + ", ".join(sorted(spec.ops.keys()))
                 misses.append(MissDetail(
                     call_id=call_id,
                     reason="schema",
-                    reask=reask_invalid_arguments(name, str(exc)),
+                    reask=reask_invalid_arguments(name, detail),
                 ))
                 continue
 

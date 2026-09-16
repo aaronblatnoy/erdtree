@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Launch an Erdtree tier in the sandbox container.
 #
-#   sandbox/run.sh marika           # 3B tier        (gold prompt) — fine-tuned marika-ft
+#   sandbox/run.sh marika           # Marika tier (gold prompt) — fine-tuned marika-v2 (7B)
 #   sandbox/run.sh marika base      # 3B tier on the untuned qwen2.5:3b baseline
 #   sandbox/run.sh radagon          # 7B-14B tier    (red prompt) — defaults to 7B
 #   sandbox/run.sh radagon 14b      # Radagon at the top of its range (qwen2.5:14b)
@@ -23,7 +23,7 @@ set -euo pipefail
 
 TIER="${1:-radagon}"
 case "$TIER" in
-  marika)  MODEL="marika-ft" ;;    # SFT on 2,721 Erdtree traces; see finetune/train/
+  marika)  MODEL="marika-v2" ;;    # Qwen2.5-7B SFT on corpus v2; see finetune/train/
   radagon) MODEL="qwen2.5:7b" ;;   # 7B-14B range; pass "14b" as arg 2 for the top end
   radahn)
     echo "radahn is the massive / dedicated-infra tier — no model that large ships in" >&2
