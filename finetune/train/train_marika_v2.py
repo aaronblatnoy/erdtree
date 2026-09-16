@@ -118,9 +118,9 @@ model = AutoModelForCausalLM.from_pretrained(
     device_map=_dm,
 )
 assert all(v != "cpu" for v in model.hf_device_map.values()), model.hf_device_map
-_split = {d: sum(1 for k, v in model.hf_device_map.items() if v == d and ".layers." in k) for d in (0, 1)}
+_split = {d: sum(1 for k, v in model.hf_device_map.items() if v == d and ".layers." in k) for d in range(torch.cuda.device_count())}
 print("device map: layers per card", _split, "lm_head on", model.hf_device_map.get("lm_head"),
-      "alloc GB", [round(torch.cuda.memory_allocated(i) / 1e9, 2) for i in (0, 1)], flush=True)
+      "alloc GB", [round(torch.cuda.memory_allocated(i) / 1e9, 2) for i in range(torch.cuda.device_count())], flush=True)
 model.config.use_cache = False
 
 peft_config = LoraConfig(
@@ -216,7 +216,7 @@ for _name, _p in trainer.model.named_parameters():
     if _p.dtype == torch.float32 and ("embed_tokens" in _name or "lm_head" in _name):
         _p.data = _p.data.to(torch.bfloat16); _n += 1
 print(f"recast {_n} large fp32 params to bf16; alloc GB after trainer init",
-      [round(torch.cuda.memory_allocated(i) / 1e9, 2) for i in (0, 1)],
+      [round(torch.cuda.memory_allocated(i) / 1e9, 2) for i in range(torch.cuda.device_count())],
       "grad ckpt:", getattr(trainer.model.get_base_model().model, "gradient_checkpointing", None), flush=True)
 _fp32 = sum(p.numel() for p in trainer.model.parameters() if p.dtype == torch.float32) / 1e6
 print(f"fp32 params: {_fp32:.1f}M", flush=True)
