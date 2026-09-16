@@ -162,6 +162,67 @@ def _build_scenario_index(pool: str = "train") -> dict[str, Scenario]:
     return {s.id: s for s in pool_scenarios(pool)}
 
 
+def assemble_v3(scn, tier: str) -> AssembleOutcome:
+    """Build a multi-turn trace for one corpus-v3 scenario.  Every tool turn is
+    validated through the live router, simulated, and answered from the
+    result; answer turns carry the authored English.  Tools advertised are the
+    per-request selection for turn 1 plus every tool used in the record (the
+    REPL pins tools already used in the conversation the same way)."""
+    seed = _stable_seed(scn.id)
+    snapshot = make_context(tier, seed)
+    first = scn.turns[0]
+    used = [t.tool for t in scn.turns if t.tool]
+    global _SELECTOR
+    if _SELECTOR is None:
+        from core.agent.toolselect import ToolSelector
+        _SELECTOR = ToolSelector(coreimports.registry)
+    names = _SELECTOR.select(first.user_input, extra=used)
+    tools = coreimports.build_tool_list(coreimports.registry_schemas(coreimports.registry, names))
+    cfg = coreimports.PromptConfig(tier_prompt=TIER_PROMPTS[tier], snapshot_text=snapshot,
+                                   user_input=first.user_input, tools=tools, tool_choice="auto")
+    base = coreimports.assemble_messages(cfg)
+    system_msg = base[0]
+    turns: list[dict] = []
+    last_tool, last_op, last_pc = None, None, "read"
+    for i, t in enumerate(scn.turns):
+        turns.append({"role": "user", "content": t.user_input})
+        if t.tool is None:
+            try:
+                coreimports.assert_no_ai_language(t.answer, "answer_turn")
+            except ValueError as exc:
+                return AssembleOutcome(None, True, f"{scn.id}: answer turn failed I2: {exc}")
+            turns.append(convert.assistant_text_to_openai(t.answer))
+            continue
+        spec = coreimports.registry.get(t.tool)
+        try:
+            operation, rest = coreimports.validate_arguments(spec, dict(t.args))
+        except ValueError as exc:
+            return AssembleOutcome(None, True, f"{scn.id} turn {i+1}: invalid call: {exc}")
+        result = simulate(t.tool, operation, rest, snapshot)
+        try:
+            coreimports.assert_no_ai_language(str(result.get("summary", "")), "simulate.summary")
+        except ValueError as exc:
+            return AssembleOutcome(None, True, f"{scn.id} turn {i+1}: {exc}")
+        tool_use_id = _tool_use_id(f"{scn.id}#{i}")
+        block = {"type": "tool_use", "id": tool_use_id, "name": t.tool, "input": {"operation": operation, **rest}}
+        call_turn = convert.anthropic_tool_use_to_openai_tool_calls([block])
+        turns.append(call_turn)
+        turns.append(convert.anthropic_tool_result_to_openai_tool_msg(call_turn["tool_calls"][0]["id"], result))
+        answer = render_answer(result)
+        try:
+            coreimports.assert_no_ai_language(answer, "final_answer")
+        except ValueError as exc:
+            return AssembleOutcome(None, True, f"{scn.id} turn {i+1}: answer failed I2: {exc}")
+        turns.append(convert.assistant_text_to_openai(answer))
+        last_tool, last_op = t.tool, operation
+        last_pc = (spec.permission_class_for(operation) or coreimports.OpClass.WRITE).value
+    meta = {"tier": tier, "scenario_id": scn.id, "kind": scn.kind, "turns": len(scn.turns),
+            "chosen_tool": last_tool, "chosen_operation": last_op, "permission_class": last_pc,
+            "labeled_tool": scn.tool, "labeled_operation": last_op, "selection_match": True}
+    record = convert.assemble_record(system_msg["content"], tools, turns, meta)
+    return AssembleOutcome(record, False, selection_match=True)
+
+
 def iter_v2_judgments() -> Iterator[tuple[str, int, dict]]:
     """Corpus v2 scenarios carry their own reference call and answer; expose
     them in the judgment shape so assemble_one is the single trace builder."""
@@ -173,6 +234,29 @@ def iter_v2_judgments() -> Iterator[tuple[str, int, dict]]:
 
 
 _SELECTOR = None
+
+
+def render_answer(result: dict) -> str:
+    """The operator-facing answer, derived from the simulated result so the
+    supervision never contradicts the tool output (17% of corpus v2 paired a
+    failing result with a success answer).  Terse: outcome line, then at most
+    six lines of real output."""
+    code = int(result.get("exit_code", 0) or 0)
+    summary = (result.get("summary") or "").strip()
+    stdout = (result.get("stdout") or "").strip()
+    stderr = (result.get("stderr") or "").strip()
+    if code != 0:
+        first_err = stderr.splitlines()[0].strip() if stderr else ""
+        head = f"Failed (exit {code})"
+        body = summary or first_err
+        if first_err and first_err not in body:
+            body = f"{body} {first_err}".strip()
+        return f"{head}: {body}" if body else f"{head}."
+    lines = [ln.rstrip() for ln in stdout.splitlines() if ln.strip()][:6]
+    out = summary or "Done, exit code 0."
+    if lines:
+        out += "\n" + "\n".join(lines)
+    return out
 
 
 def _selected_tools(user_input: str, pin: str) -> list[dict]:
@@ -193,6 +277,7 @@ def assemble_one(
     *,
     confirm_turns: bool = True,
     select_tools: bool = False,
+    ground_answers: bool = False,
 ) -> AssembleOutcome:
     """Assemble a single trace from one cold judgment, or return a drop."""
     if "__parse_error__" in judgment:
@@ -282,7 +367,10 @@ def assemble_one(
     correlated_id = assistant_tool_turn["tool_calls"][0]["id"]
     turns.append(convert.anthropic_tool_result_to_openai_tool_msg(correlated_id, result))
 
-    # 7. Final English answer — assert I2-clean (drop+log on violation).
+    # 7. Final English answer — derived from the simulated result when
+    #    ground_answers is set; assert I2-clean (drop+log on violation).
+    if ground_answers:
+        answer = render_answer(result)
     try:
         coreimports.assert_no_ai_language(answer, "final_answer")
     except ValueError as exc:
@@ -336,12 +424,24 @@ def run(args: argparse.Namespace) -> int:
                 return key
         return "other"
 
+    if args.pool == "v3":
+        from finetune.scenarios_v3 import load_all as _load_v3
+        n_ok = n_drop = 0
+        with open(args.out, "a" if args.append else "w", encoding="utf-8") as out_fh:
+            for scn in _load_v3():
+                oc = assemble_v3(scn, args.tier)
+                if oc.dropped:
+                    n_drop += 1; print(f"[drop] {oc.reason}", file=sys.stderr); continue
+                out_fh.write(json.dumps(oc.record, ensure_ascii=False) + "\n"); n_ok += 1
+        print(f"OK assembled {n_ok} v3 trace(s) to {args.out} [dropped {n_drop}]")
+        return 0 if n_ok else 1
     source = iter_v2_judgments() if args.pool == "v2" else iter_judgments(args.judgments)
     with open(args.out, "a" if args.append else "w", encoding="utf-8") as out_fh:
         for _fpath, _line_no, judgment in source:
             try:
                 outcome = assemble_one(judgment, args.tier, scenarios_by_id,
-                                       confirm_turns=not args.no_confirm, select_tools=args.select_tools)
+                                       confirm_turns=not args.no_confirm, select_tools=args.select_tools,
+                                       ground_answers=args.ground_answers)
             except Exception as exc:  # noqa: BLE001 — never let one bad record abort the stream
                 dropped += 1
                 bucket = f"exception:{type(exc).__name__}"
@@ -396,7 +496,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--select-tools", action="store_true",
                    help="Advertise the per-request tool selection (core.agent.toolselect) instead of all tools.")
     p.add_argument("--append", action="store_true", help="Append to --out instead of overwriting.")
-    p.add_argument("--pool", choices=("train", "eval", "v2"), default="train",
+    p.add_argument("--ground-answers", action="store_true",
+                   help="Derive the final answer from the simulated tool result (corpus v3) instead of the authored text.")
+    p.add_argument("--pool", choices=("train", "eval", "v2", "v3"), default="train",
                    help="Scenario pool the judgments refer to (eval = held-out EVAL_SCENARIOS).")
     p.add_argument("--tier", choices=TIERS, default="radagon",
                    help="Tier (persona/context depth + meta only; never structure).")

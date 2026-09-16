@@ -177,11 +177,20 @@ _ATTN = re.compile(r"\.(q_proj|k_proj|v_proj|o_proj)$")
 _ROUTER = re.compile(r"\.mlp\.gate$")
 _SHARED = re.compile(r"shared_expert.*\.(gate_proj|up_proj|down_proj)$")
 
-target_modules, n_attn, n_router, n_shared = [], 0, 0, 0
+# EXPERTS=1: also adapt the per-expert MLP projections.  Requires a transformers
+# where experts are separate nn.Linear modules (4.57.x); in 5.x they are fused
+# 3-D parameters PEFT cannot wrap, and this flag finds nothing.  Attention-only
+# LoRA (the first Radagon run) left most of the network untouched and underfit
+# (loss 0.51 vs 0.36 for the dense 7B on the same data).
+ADAPT_EXPERTS = os.environ.get("EXPERTS", "0") == "1"
+_EXPERT = re.compile(r"\.experts\.\d+\.(gate_proj|up_proj|down_proj)$")
+target_modules, n_attn, n_router, n_shared, n_expert = [], 0, 0, 0, 0
 skipped_router = []
 for name, mod in model.named_modules():
     if ".experts." in name or name.endswith(".experts"):
-        continue                     # per-expert MLPs: never adapt
+        if ADAPT_EXPERTS and isinstance(mod, nn.Linear) and _EXPERT.search(name):
+            target_modules.append(name); n_expert += 1
+        continue
     is_linear = isinstance(mod, nn.Linear)
     if _ATTN.search(name):
         if is_linear:
@@ -201,15 +210,17 @@ for name, mod in model.named_modules():
 if not target_modules:
     raise SystemExit("no LoRA target modules matched -- check the model architecture")
 print(f"LoRA targets: {len(target_modules)} modules "
-      f"(attention={n_attn}, router={n_router}, shared_expert={n_shared})")
+      f"(attention={n_attn}, router={n_router}, shared_expert={n_shared}, expert={n_expert})")
+if ADAPT_EXPERTS and n_expert == 0:
+    raise SystemExit("EXPERTS=1 but no expert nn.Linear found: install transformers 4.57.x (5.x fuses experts)")
 if skipped_router:
     name, cls = skipped_router[0]
     print(f"NOTE: {len(skipped_router)} router module(s) are {cls}, not nn.Linear "
           f"(e.g. {name}) -- LoRA cannot wrap them, so the router is left frozen.")
 
 peft_config = LoraConfig(
-    r=16, lora_alpha=32, lora_dropout=0.0, bias="none",
-    task_type="CAUSAL_LM",
+    r=int(os.environ.get("LORA_R", 16)), lora_alpha=int(os.environ.get("LORA_ALPHA", 32)),
+    lora_dropout=0.0, bias="none", task_type="CAUSAL_LM",
     target_modules=target_modules,
 )
 
@@ -238,7 +249,7 @@ trainer = MaskedLMTrainer(
         gradient_accumulation_steps=int(os.environ.get("GRAD_ACCUM", 16)),
         num_train_epochs=int(os.environ.get("EPOCHS", 2)),
         max_steps=10 if SMOKE else -1,
-        learning_rate=1e-4,
+        learning_rate=float(os.environ.get("LR", 1e-4)),
         lr_scheduler_type="cosine",
         warmup_steps=int(os.environ.get("WARMUP_STEPS", 20)),
         logging_steps=1 if SMOKE else 5,
