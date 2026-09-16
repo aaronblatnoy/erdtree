@@ -223,22 +223,35 @@ for name, mod in model.named_modules():
     elif _SHARED.search(name) and is_linear:
         target_modules.append(name); n_shared += 1
 
+# transformers 5.x fuses the experts into 3-D nn.Parameters (Qwen3MoeExperts:
+# gate_up_proj [E, 2*I, H] and down_proj [E, H, I]).  PEFT >= 0.17 can adapt a
+# bare parameter through LoraConfig(target_parameters=...), which keeps the
+# fused (fast) forward.  Used when EXPERTS=1 finds no per-expert nn.Linear.
+target_parameters: list[str] = []
+if ADAPT_EXPERTS and n_expert == 0:
+    for name, param in model.named_parameters():
+        if ".experts." in name and param.dim() == 3 and name.endswith((".gate_up_proj", ".down_proj")):
+            target_parameters.append(name)
+    print(f"fused expert parameters targeted: {len(target_parameters)}", flush=True)
+
 if not target_modules:
     raise SystemExit("no LoRA target modules matched -- check the model architecture")
 print(f"LoRA targets: {len(target_modules)} modules "
       f"(attention={n_attn}, router={n_router}, shared_expert={n_shared}, expert={n_expert})")
-if ADAPT_EXPERTS and n_expert == 0:
-    raise SystemExit("EXPERTS=1 but no expert nn.Linear found: install transformers 4.57.x (5.x fuses experts)")
+
 if skipped_router:
     name, cls = skipped_router[0]
     print(f"NOTE: {len(skipped_router)} router module(s) are {cls}, not nn.Linear "
           f"(e.g. {name}) -- LoRA cannot wrap them, so the router is left frozen.")
 
-peft_config = LoraConfig(
+_lora_kwargs = dict(
     r=int(os.environ.get("LORA_R", 16)), lora_alpha=int(os.environ.get("LORA_ALPHA", 32)),
     lora_dropout=0.0, bias="none", task_type="CAUSAL_LM",
     target_modules=target_modules,
 )
+if target_parameters:
+    _lora_kwargs["target_parameters"] = target_parameters
+peft_config = LoraConfig(**_lora_kwargs)
 
 # -------------------------------------------------------------------- the data
 records = []
