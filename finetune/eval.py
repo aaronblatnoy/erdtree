@@ -102,6 +102,9 @@ def _judge(name, args, ref_tool, ref_args):
     if spec is None:
         out["err"] = f"unknown tool {name!r}"
         return out
+    if "operation" not in args and len(spec.ops) == 1:  # mirrors the router's single-op default
+        args = {"operation": next(iter(spec.ops)), **args}
+        out["op"] = out["tool"] and args.get("operation") == ref_op
     try:
         coreimports.validate_arguments(spec, dict(args))
         out["valid"] = True

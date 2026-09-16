@@ -511,6 +511,11 @@ class Router:
                 ))
                 continue
 
+            # A tool with exactly one operation needs no choice: fill it in when
+            # the model omits it (docs.retrieve is the common case).
+            if isinstance(parsed_args, dict) and "operation" not in parsed_args and len(spec.ops) == 1:
+                parsed_args = {"operation": next(iter(spec.ops)), **parsed_args}
+
             # Schema validation against the selected op (0002 §5).
             try:
                 operation, op_args = validate_arguments(spec, parsed_args)
