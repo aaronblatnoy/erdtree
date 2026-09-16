@@ -20,6 +20,7 @@ OUT = os.path.expanduser(
     os.environ.get("OUT", "~/erdtree-train/out/marika-v2-qlora"))
 
 import torch
+import torch.utils.checkpoint
 from torch.nn.attention import sdpa_kernel, SDPBackend
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from peft import LoraConfig
@@ -74,8 +75,23 @@ class MaskedLMTrainer(SFTTrainer):
         labels = inputs["labels"].to(h.device)
         shift_h, shift_y = h[:, :-1], labels[:, 1:]
         keep = shift_y != -100
-        logits = base.lm_head(shift_h[keep].to(base.lm_head.weight.dtype)).float()
-        loss_sum = torch.nn.functional.cross_entropy(logits, shift_y[keep], reduction="sum")
+        sel_h = shift_h[keep].to(base.lm_head.weight.dtype)
+        sel_y = shift_y[keep]
+        # Chunk the head + cross-entropy and checkpoint each chunk so only one
+        # chunk of float32 logits (CHUNK x 152k) is alive at a time; multi-turn
+        # records have far more assistant tokens than single-turn ones.
+        CHUNK = 256
+        head = base.lm_head
+
+        def _chunk_loss(h, y):
+            return torch.nn.functional.cross_entropy(head(h).float(), y, reduction="sum")
+
+        loss_sum = None
+        for i in range(0, sel_h.shape[0], CHUNK):
+            part = torch.utils.checkpoint.checkpoint(_chunk_loss, sel_h[i:i + CHUNK], sel_y[i:i + CHUNK], use_reentrant=False)
+            loss_sum = part if loss_sum is None else loss_sum + part
+        if loss_sum is None:
+            loss_sum = (shift_h.sum() * 0.0).float()
         denom = num_items_in_batch if num_items_in_batch is not None else keep.sum().clamp(min=1)
         if torch.is_tensor(denom):
             denom = denom.to(loss_sum.device)
@@ -95,9 +111,11 @@ bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
                          bnb_4bit_use_double_quant=True, bnb_4bit_compute_dtype=torch.bfloat16)
 _cfg = AutoConfig.from_pretrained(MODEL)
 ON0 = int(os.environ.get("GPU0_LAYERS", _cfg.num_hidden_layers // 2))  # device_map="auto" stacked ~3x more on card 1; split by hand
+# SINGLE_GPU=1: one big card (rented); otherwise the black-sky two-card split.
+_dm = {"": 0} if os.environ.get("SINGLE_GPU") == "1" else explicit_layout(_cfg.num_hidden_layers, ON0, _cfg.num_hidden_layers - ON0)
 model = AutoModelForCausalLM.from_pretrained(
     MODEL, quantization_config=bnb, dtype=torch.bfloat16, attn_implementation="sdpa",
-    device_map=explicit_layout(_cfg.num_hidden_layers, ON0, _cfg.num_hidden_layers - ON0),  # even split, nothing on cpu
+    device_map=_dm,
 )
 assert all(v != "cpu" for v in model.hf_device_map.values()), model.hf_device_map
 _split = {d: sum(1 for k, v in model.hf_device_map.items() if v == d and ".layers." in k) for d in (0, 1)}
@@ -133,7 +151,7 @@ trainer = MaskedLMTrainer(
         dataset_text_field="text",
         max_length=MAX_SEQ,
         per_device_train_batch_size=1,
-        gradient_accumulation_steps=8,      # x2 GPUs = global batch 16
+        gradient_accumulation_steps=int(os.environ.get("GRAD_ACCUM", 8)),      # x2 GPUs = global batch 16
         num_train_epochs=int(os.environ.get("EPOCHS", 2)),  # 2 on black-sky: ~18 s/sample measured, 3 epochs would be ~4 days
         max_steps=10 if SMOKE else -1,
         learning_rate=1e-4,
