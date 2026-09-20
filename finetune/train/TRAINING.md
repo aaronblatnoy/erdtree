@@ -164,3 +164,15 @@ checked against the real module tree on black-sky and are worth knowing:
 The effective target set on this checkpoint is therefore attention q/k/v/o on
 all 48 layers, 192 modules. The script prints the per-category counts at
 startup; check that line on the smoke run.
+
+
+## Rented pods: mandatory spend guard
+
+Every job on a rented pod runs under `pod_guard.sh`, on the pod:
+
+```
+RUNPOD budget cap (default 5 USD):
+  /workspace/pod_guard.sh 5 2.12 -- python train_radagon_moe.py
+```
+
+The guard stops the pod when the job exits for any reason, and also at the moment budget / hourly price is reached, independent of any session watching it. Pull the adapter (tens of MB) to black-sky, then terminate the pod. Do not build GGUFs on the pod and drag them out: the 18 GB transfer ran at 1 to 5 MB/s and cost more than the training.
