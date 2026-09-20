@@ -804,6 +804,7 @@ class Repl:
         )
         new_msgs_start = len(messages)
 
+        _nocall_reasked = False
         for _round in range(self._max_rounds):
             outcome.rounds += 1
             # THE UnderstandingStrategy seam (owned by P1/P5 — P6/P7/P8 MUST NOT
@@ -825,6 +826,26 @@ class Repl:
             messages.append(self._assistant_message(result.raw_content, result.raw_calls))
 
             if result.english_content and not result.misses and not result.calls:
+                # No-call guard: a prose "result" with nothing dispatched this
+                # turn is never shown (core/agent/nocallguard).  Re-ask once for
+                # a tool call; if the model still will not call, say so plainly.
+                from core.agent import nocallguard
+
+                _dispatched = outcome.tool_calls_made + outcome.refused
+                if nocallguard.should_block(user_input, result.english_content, _dispatched):
+                    self._audit.write(
+                        tier=self._tier_label, nl_input=user_input,
+                        result="blocked:no-call", permission_decision="n/a",
+                    )
+                    outcome.audit_records += 1
+                    if not _nocall_reasked:
+                        _nocall_reasked = True
+                        messages.append({"role": "user", "content": nocallguard.REASK_TEXT})
+                        continue
+                    outcome.final_text = nocallguard.NOTHING_RAN_TEXT
+                    outcome.ended_in_english = True
+                    self._safe_render(nocallguard.NOTHING_RAN_TEXT)
+                    break
                 outcome.final_text = result.english_content
                 outcome.ended_in_english = True
                 # Presentation only. A faulting render (e.g. a broken streaming
