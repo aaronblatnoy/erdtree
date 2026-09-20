@@ -63,6 +63,11 @@ def _facts(tier_name: str, info: dict[str, str]) -> list[tuple[str, str]]:
     rows: list[tuple[str, str]] = []
     edition = info.get("version")
     rows.append(("edition", f"{tier_name}" + (f" · {edition}" if edition else "")))
+    build = info.get("build")
+    if build:
+        # Which trained build is loaded (e.g. marika-v2.1).  "edition" is the
+        # product version and does not change when the build does.
+        rows.append(("build", build))
     for key, label in (
         ("session", "session"),
         ("kernel", "kernel"),

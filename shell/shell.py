@@ -226,6 +226,9 @@ class ProductShell:
         import socket
 
         info: dict[str, str] = {"version": _EDITION_VERSION}
+        _build = os.environ.get("ERDTREE_MODEL", "").strip()
+        if _build:
+            info["build"] = _build
         try:
             info["session"] = f"{getpass.getuser()}@{socket.gethostname().split('.')[0]}"
         except Exception:  # noqa: BLE001
