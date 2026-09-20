@@ -156,13 +156,67 @@ def score_one(model: str, rec: dict, num_ctx: int) -> dict:
     return out
 
 
+def score_multiturn(model: str, scn, num_ctx: int, tier: str = "radagon") -> dict:
+    """Held-out FOLLOW-UP scoring.  Turn 1 is teacher-forced exactly as the
+    runtime would record it (reference call, simulated result, answer derived
+    from the result); the model is then asked for turn 2's call with that
+    history in context.  Tools advertised = selection for turn 2's text plus
+    the tool used in turn 1 (the REPL pins tools already used)."""
+    from finetune.assemble import render_answer, _stable_seed
+    from finetune.context import make_context
+    from finetune.simulate import simulate
+    from finetune.generate import TIER_PROMPTS
+
+    t1, t2 = scn.turns[0], scn.turns[1]
+    snapshot = make_context(tier, _stable_seed(scn.id))
+    names = _SELECTOR.select(t2.user_input, extra=[t1.tool])
+    tools = build_tool_list(coreimports.registry_schemas(coreimports.registry, names))
+    cfg = coreimports.PromptConfig(tier_prompt=TIER_PROMPTS[tier], snapshot_text=snapshot,
+                                   user_input=t1.user_input, tools=tools, tool_choice="auto")
+    system_msg = coreimports.assemble_messages(cfg)[0]
+    spec1 = coreimports.registry.get(t1.tool)
+    op1, rest1 = coreimports.validate_arguments(spec1, dict(t1.args))
+    res1 = simulate(t1.tool, op1, rest1, snapshot)
+    payload = {"exit_code": res1.get("exit_code", 0), "stdout_summary": (res1.get("stdout") or "")[:512],
+               "stderr_summary": (res1.get("stderr") or "")[:512], "summary": res1.get("summary", "")}
+    msgs = [
+        {"role": "system", "content": system_msg["content"]},
+        {"role": "user", "content": t1.user_input},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "call_t1", "type": "function",
+            "function": {"name": t1.tool, "arguments": dict(t1.args)}}]},
+        {"role": "tool", "tool_call_id": "call_t1", "content": json.dumps(payload)},
+        {"role": "assistant", "content": render_answer(res1)},
+        {"role": "user", "content": t2.user_input},
+    ]
+    out = {"id": scn.id, "pc": "followup", "advertised": t2.tool in names, "called": False, "tool": False,
+           "op": False, "valid": False, "args": False, "args_req": False, "reask": False,
+           "op2": False, "valid2": False, "i2": True, "chosen": None}
+    m = chat(model, msgs, tools, num_ctx)
+    out["i2"] = i2_ok(m.get("content", ""))
+    name, args = _parse_call(m)
+    if name is None:
+        return out
+    out["called"] = True
+    j = _judge(name, args, t2.tool, dict(t2.args))
+    out.update({k: j[k] for k in ("tool", "op", "valid", "args", "args_req")})
+    out["op2"], out["valid2"] = out["op"], out["valid"]
+    out["chosen"] = f"{name}.{args.get('operation')}"
+    return out
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser()
     p.add_argument("path"); p.add_argument("--model", action="append", required=True)
     p.add_argument("--num-ctx", type=int, default=16384); p.add_argument("--limit", type=int, default=0)
     p.add_argument("--out", default="finetune/data/eval_results.jsonl")
+    p.add_argument("--multiturn", action="store_true",
+                   help="Score the held-out follow-up pool (finetune/scenarios/eval_pool_multiturn.py); PATH is ignored.")
     a = p.parse_args(argv)
-    recs = [json.loads(l) for l in open(a.path)]
+    if a.multiturn:
+        from finetune.scenarios.eval_pool_multiturn import EVAL_MULTITURN
+        recs = list(EVAL_MULTITURN)
+    else:
+        recs = [json.loads(l) for l in open(a.path)]
     if a.limit: recs = recs[:a.limit]
     summary = {}
     with open(a.out, "a") as fh:
@@ -170,9 +224,10 @@ def main(argv=None) -> int:
             rows, t0 = [], time.time()
             for i, rec in enumerate(recs, 1):
                 try:
-                    r = score_one(model, rec, a.num_ctx)
+                    r = score_multiturn(model, rec, a.num_ctx) if a.multiturn else score_one(model, rec, a.num_ctx)
                 except Exception as exc:
-                    r = {"id": rec["meta"]["scenario_id"], "pc": rec["meta"]["permission_class"], "error": str(exc)[:200]}
+                    _id = rec.id if a.multiturn else rec["meta"]["scenario_id"]
+                    r = {"id": _id, "pc": "followup" if a.multiturn else rec["meta"]["permission_class"], "error": str(exc)[:200]}
                 r["model"] = model; rows.append(r); fh.write(json.dumps(r) + "\n"); fh.flush()
                 print(f"[{model}] {i}/{len(recs)} {r['id']} adv={r.get('advertised')} op={r.get('op')} valid={r.get('valid')} op2={r.get('op2')} {r.get('chosen')}", file=sys.stderr)
             n = len(rows)

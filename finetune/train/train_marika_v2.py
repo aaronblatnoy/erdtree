@@ -117,9 +117,9 @@ model = AutoModelForCausalLM.from_pretrained(
     MODEL, quantization_config=bnb, dtype=torch.bfloat16, attn_implementation="sdpa",
     device_map=_dm,
 )
-assert all(v != "cpu" for v in model.hf_device_map.values()), model.hf_device_map
-_split = {d: sum(1 for k, v in model.hf_device_map.items() if v == d and ".layers." in k) for d in range(torch.cuda.device_count())}
-print("device map: layers per card", _split, "lm_head on", model.hf_device_map.get("lm_head"),
+_hdm = getattr(model, "hf_device_map", None) or {"": 0}
+assert all(v != "cpu" for v in _hdm.values()), _hdm
+print("device map:", sorted({str(v) for v in _hdm.values()}),
       "alloc GB", [round(torch.cuda.memory_allocated(i) / 1e9, 2) for i in range(torch.cuda.device_count())], flush=True)
 model.config.use_cache = False
 
@@ -156,7 +156,7 @@ trainer = MaskedLMTrainer(
         max_steps=10 if SMOKE else -1,
         learning_rate=1e-4,
         lr_scheduler_type="cosine",
-        warmup_ratio=0.03,
+        warmup_steps=int(os.environ.get("WARMUP_STEPS", 20)),
         logging_steps=1 if SMOKE else 5,
         save_strategy="no" if SMOKE else "steps",
         save_steps=25,
