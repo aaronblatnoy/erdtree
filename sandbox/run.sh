@@ -22,6 +22,12 @@
 set -euo pipefail
 
 TIER="${1:-radagon}"
+# Accept a model name where a tier is expected: "marika-v2.1" means tier marika
+# running that model, "radagon-ft" means tier radagon running that model.
+case "$TIER" in
+  marika-*|marika_*)   set -- marika "$TIER";  TIER=marika ;;
+  radagon-*|radagon_*) set -- radagon "$TIER"; TIER=radagon ;;
+esac
 case "$TIER" in
   marika)  MODEL="marika-v2.1" ;;  # Qwen2.5-7B SFT on corpus v3 (multi-turn, grounded answers); see finetune/train/
   radagon) MODEL="qwen2.5:7b" ;;   # 7B-14B range; pass "14b" as arg 2 for the top end
@@ -29,7 +35,7 @@ case "$TIER" in
     echo "radahn is the massive / dedicated-infra tier — no model that large ships in" >&2
     echo "this sandbox. Use 'radagon' (7B-14B) or 'marika' (3B)." >&2
     exit 2 ;;
-  *) echo "unknown tier: $TIER (use: marika | radagon)" >&2; exit 2 ;;
+  *) echo "unknown tier: $TIER (use: marika | radagon, or a model name such as marika-v2.1)" >&2; exit 2 ;;
 esac
 if [ "${2:-}" != "" ]; then
   case "$2" in
