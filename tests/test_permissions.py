@@ -994,3 +994,13 @@ def test_f3_rsync_del_alias_is_destructive():
 def test_f3_rsync_del_negatives(cmd, expected):
     got = classify(cmd).op_class
     assert got is expected, f"{cmd!r} -> {got} (expected {expected})"
+
+
+def test_nvidia_smi_is_read_only_for_queries_and_gated_for_settings():
+    from core.agent.permissions import classify, OpClass, Gate
+    for c in ("nvidia-smi", "nvidia-smi --query-gpu=name,memory.total --format=csv", "nvidia-smi -L"):
+        assert classify(c).op_class is OpClass.READ, c
+    for c in ("nvidia-smi --gpu-reset", "nvidia-smi -r", "nvidia-smi -pl 150", "nvidia-smi -i 0 -pm 1",
+              "nvidia-smi -c 3", "nvidia-smi --power-limit=120"):
+        d = classify(c)
+        assert d.op_class is not OpClass.READ and d.gate is not Gate.ALLOW, c

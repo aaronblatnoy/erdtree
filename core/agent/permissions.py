@@ -718,6 +718,25 @@ def _classify_flagbased(tokens: Sequence[str], raw: str) -> tuple[OpClass, str] 
     if verb in ("psql", "mysql", "mariadb"):
         return _classify_sql_tool(tokens)
 
+    if verb == "nvidia-smi":
+        # Reporting forms are reads.  ANY state-changing flag makes it a write:
+        # GPU reset, power limit, persistence/compute mode, ECC, clocks, MIG.
+        raw_tokens = [t for t in tokens[1:]]
+        changing = {
+            "-r", "--gpu-reset", "-pl", "--power-limit", "-pm", "--persistence-mode",
+            "-c", "--compute-mode", "-e", "--ecc-config", "-p", "--reset-ecc-errors",
+            "-ac", "--applications-clocks", "-rac", "--reset-applications-clocks",
+            "-lgc", "--lock-gpu-clocks", "-rgc", "--reset-gpu-clocks",
+            "-lmc", "--lock-memory-clocks", "-rmc", "--reset-memory-clocks",
+            "-mig", "--multi-instance-gpu", "-acp", "--applications-clocks-permission",
+            "-am", "--accounting-mode", "-caa", "--clear-accounted-apps", "-gom", "--gom",
+            "-dm", "--driver-model", "-fdm", "--force-driver-model", "--auto-boost-default",
+            "--auto-boost-permission", "-cc", "--cuda-clocks",
+        }
+        if any(t.split("=", 1)[0] in changing for t in raw_tokens):
+            return OpClass.WRITE, "nvidia-smi with a settings flag changes GPU state"
+        return OpClass.READ, "nvidia-smi query reports GPU state without changing it"
+
     if verb == "rsync":
         # --delete* -> DESTRUCTIVE handled in _classify_argv.
         if "n" in flags or "--dry-run" in flags or "--list-only" in flags:
