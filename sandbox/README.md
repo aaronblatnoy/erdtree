@@ -29,7 +29,7 @@ You land in the tier's NL prompt. Type plain English; `!cmd` runs one bash comma
 
 | Tier    | Prompt color | Model (in this sandbox) |
 |---------|--------------|-------------------------|
-| marika  | gold         | `marika-ft` (Qwen2.5-3B fine-tuned on Erdtree traces; `marika base` = untuned `qwen2.5:3b`) |
+| marika  | gold         | `marika-v2.1` (Qwen2.5-7B fine-tuned on Erdtree corpus v3; `marika base` = untuned `qwen2.5:3b`) |
 | radagon | red          | `qwen2.5:7b` (7B–14B range; pass `14b` for the high end) |
 | radahn  | scarlet      | massive / dedicated-infra — **not** a 14B; not runnable here |
 
