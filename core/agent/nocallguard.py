@@ -42,6 +42,20 @@ REASK_TEXT = (
 NOTHING_RAN_TEXT = "Nothing was run. Rephrase the request or name the unit, file, or target."
 
 
+# Wording that belongs to the runtime's own correction messages.  A small model
+# sometimes repeats them back as its answer; that text is never for the operator.
+_RUNTIME_ECHO = re.compile(
+    r"(tool input could not be parsed|through the tool interface|not written as text|"
+    r"is not a recognised tool|valid JSON|failed precondition|no operation was run for that request)",
+    re.I,
+)
+STEP_FAILED_TEXT = "That step did not complete. See the line above for the reason."
+
+
+def is_runtime_echo(text: str) -> bool:
+    return bool(_RUNTIME_ECHO.search(text or ""))
+
+
 def looks_like_result(text: str) -> bool:
     return bool(_RESULT_SHAPES.search(text or ""))
 

@@ -135,6 +135,50 @@ def _op_connections(args: dict[str, Any]) -> ToolResult:
     )
 
 
+def _op_current(args: dict[str, Any]) -> ToolResult:
+    """Which network this machine is on: default route, its interface and address, DNS, Wi-Fi name if any."""
+    route = run_subprocess(["ip", "-4", "route", "show", "default"])
+    if not route.ok or not route.stdout.strip():
+        return ToolResult(exit_code=route.exit_code or 1, stdout=route.stdout, stderr=route.stderr,
+                          summary="No default route: this machine is not connected to a network."
+                                  + _maybe_selinux_hint(route.stderr))
+    first = route.stdout.strip().splitlines()[0].split()
+    gateway = first[first.index("via") + 1] if "via" in first else "none"
+    iface = first[first.index("dev") + 1] if "dev" in first else ""
+    out = [f"default route: via {gateway} on {iface}"]
+    if iface:
+        addr = run_subprocess(["ip", "-brief", "addr", "show", "dev", iface])
+        if addr.ok and addr.stdout.strip():
+            out.append("interface:     " + " ".join(addr.stdout.split()))
+    try:
+        with open("/etc/resolv.conf", encoding="utf-8") as fh:
+            dns = [l.split()[1] for l in fh if l.startswith("nameserver") and len(l.split()) > 1]
+        if dns:
+            out.append("dns servers:   " + ", ".join(dns))
+    except OSError:
+        pass
+    wifi = run_subprocess(["nmcli", "-t", "-f", "active,ssid", "dev", "wifi"])
+    if wifi.ok:
+        ssids = [l.split(":", 1)[1] for l in wifi.stdout.splitlines() if l.startswith("yes:")]
+        if ssids:
+            out.append("wifi network:  " + ssids[0])
+    return ToolResult(exit_code=0, stdout="\n".join(out) + "\n", stderr="",
+                      summary=f"Connected through {iface}, gateway {gateway}.")
+
+
+def _op_listening(args: dict[str, Any]) -> ToolResult:
+    """ss -tulpn — listening TCP/UDP sockets with the owning process."""
+    result = run_subprocess(["ss", "-tulpn"])
+    selinux = _maybe_selinux_hint(result.stderr)
+    if result.ok:
+        count = max(0, len([l for l in result.stdout.splitlines() if l.strip()]) - 1)
+        summary = f"{count} listening socket(s), with the owning process where visible."
+    else:
+        summary = f"Listening-socket query failed (exit {result.exit_code})."
+    return ToolResult(exit_code=result.exit_code, stdout=result.stdout, stderr=result.stderr,
+                      summary=summary + selinux)
+
+
 def _op_interfaces(args: dict[str, Any]) -> ToolResult:
     """ip link show — list all network interfaces."""
     result = run_subprocess(["ip", "link", "show"])
@@ -312,6 +356,8 @@ _DISPATCH: dict[str, Any] = {
     "status":      _op_status,
     "connections": _op_connections,
     "interfaces":  _op_interfaces,
+    "listening":   _op_listening,
+    "current":     _op_current,
     "wifi":        _op_wifi,
     "bring_up":    _op_bring_up,
     "bring_down":  _op_bring_down,
@@ -397,6 +443,18 @@ NETWORK_SPEC = ToolSpec(
             permission_class=OpClass.READ,
             args=[],
             description="List NetworkManager connection profiles.",
+        ),
+        "current": OpSpec(
+            op_name="current",
+            permission_class=OpClass.READ,
+            args=[],
+            description="Which network this machine is on now: gateway, interface, address, DNS.",
+        ),
+        "listening": OpSpec(
+            op_name="listening",
+            permission_class=OpClass.READ,
+            args=[],
+            description="Listening ports and which process owns each (ss -tulpn).",
         ),
         "interfaces": OpSpec(
             op_name="interfaces",

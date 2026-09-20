@@ -213,7 +213,7 @@ def _compact(text: str, limit: int = _DESC_MAX) -> str:
 # Tools whose domains overlap.  The hint is appended to the description so the
 # schema itself says which tool a request belongs to (kept short, I2-clean).
 _TOOL_HINTS: dict[str, str] = {
-    "firewall": "Use for zones, services, ports and reload (firewalld); not raw nft rules.",
+    "firewall": "firewalld rules only: allowed zones, services, ports, reload. To see what is LISTENING on a port use 'network' listening.",
     "nftables": "Raw nft ruleset only; firewalld zones/services/ports belong to 'firewall'.",
     "services": "Generic systemd units. Prefer the dedicated tool when one exists: sssd, samba, httpd, nginx, postgresql, mariadb, nfs, chrony, and systemd_timers for timers.",
     "cron": "crontab and /etc/cron.d entries; systemd timers belong to 'systemd_timers', one-off jobs to 'at'.",
@@ -223,7 +223,7 @@ _TOOL_HINTS: dict[str, str] = {
     "performance": "System-wide CPU/memory/IO/load metrics over time; single processes belong to 'processes', counters to 'perf'.",
     "perf": "Hardware counters and profiling of a command or PID; general metrics belong to 'performance'.",
     "dns": "Resolution and record lookups (dig/host/resolv.conf); interface IPs belong to 'network', profiles to 'nmcli'.",
-    "network": "Interfaces, addresses, link state and connectivity; NetworkManager profiles belong to 'nmcli'.",
+    "network": "'current' answers 'what network am I on'. Interfaces, addresses, link state, and listening ports with their owning process; NetworkManager profiles belong to 'nmcli'.",
     "nmcli": "NetworkManager connection profiles; live interface state belongs to 'network'.",
     "logs": "journalctl and dmesg; audit records belong to 'audit'.",
     "audit": "Kernel audit rules and ausearch/aureport; general logs belong to 'logs'.",

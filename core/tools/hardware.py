@@ -213,6 +213,24 @@ def _op_summary(args: dict[str, Any]) -> ToolResult:
 
 # ---------------------------------------------------------------------------
 # Dispatch table
+def _op_memory_modules(args: dict[str, Any]) -> ToolResult:
+    """Installed RAM modules: size, type, speed, manufacturer, part number."""
+    result = run_subprocess(["dmidecode", "--type", "memory"])
+    if result.ok and "Memory Device" in result.stdout:
+        keep = ("Memory Device", "Size:", "Type:", "Speed:", "Manufacturer:", "Part Number:", "Locator:",
+                "Configured Memory Speed:", "Rank:", "Form Factor:")
+        lines = [l.rstrip() for l in result.stdout.splitlines()
+                 if l.strip().startswith(keep) and "No Module Installed" not in l]
+        populated = sum(1 for l in result.stdout.splitlines()
+                        if l.strip().startswith("Size:") and "No Module" not in l)
+        return ToolResult(exit_code=0, stdout="\n".join(lines) + "\n", stderr="",
+                          summary=f"{populated} memory module(s) installed.")
+    detail = (result.stderr or "").strip().splitlines()[0] if (result.stderr or "").strip() else ""
+    return ToolResult(exit_code=result.exit_code or 1, stdout="", stderr=result.stderr,
+                      summary=("Memory module details need firmware (DMI) table access, which is not available "
+                               "here" + (f": {detail}" if detail else ".") + _maybe_selinux_hint(result.stderr)))
+
+
 def _op_gpu(args: dict[str, Any]) -> ToolResult:
     """GPUs: count, name, VRAM total/used, driver.  nvidia-smi when present,
     otherwise the display-class devices from lspci."""
@@ -239,6 +257,7 @@ def _op_gpu(args: dict[str, Any]) -> ToolResult:
 
 _DISPATCH: dict[str, Any] = {
     "gpu":     _op_gpu,
+    "memory_modules": _op_memory_modules,
     "cpu":     _op_cpu,
     "memory":  _op_memory,
     "pci":     _op_pci,
@@ -292,7 +311,13 @@ HARDWARE_SPEC = ToolSpec(
             op_name="memory",
             permission_class=OpClass.READ,
             args=[],
-            description="Show RAM and swap usage.",
+            description="RAM and swap totals and usage (free -h). Not module specs.",
+        ),
+        "memory_modules": OpSpec(
+            op_name="memory_modules",
+            permission_class=OpClass.READ,
+            args=[],
+            description="Installed RAM sticks: size, speed, brand, part number.",
         ),
         "gpu": OpSpec(
             op_name="gpu",

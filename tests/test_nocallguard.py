@@ -45,3 +45,10 @@ def test_repl_never_shows_fabrication(tmp_path, monkeypatch):
     repl = _repl(tmp_path, [("nginx restarted; PID 99", []), ("nginx restarted; PID 99", [])])
     out = repl.run_turn("restart nginx")
     assert out.final_text == g.NOTHING_RAN_TEXT and out.tool_calls_made == 0
+
+
+def test_runtime_echo_detected():
+    from core.agent import nocallguard as g
+    assert g.is_runtime_echo("Failed precondition: The tool input could not be parsed: a tool call must be "
+                             "issued through the tool interface, not written as text.")
+    assert not g.is_runtime_echo("You are connected to the office network on eth0.")

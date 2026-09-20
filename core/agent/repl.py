@@ -478,6 +478,7 @@ def synthesize_command(call: ParsedCall) -> str:
     if call.tool == "hardware":
         _HW = {
             "cpu": "lscpu", "memory": "free -h", "pci": "lspci", "gpu": "nvidia-smi",
+            "memory_modules": "dmidecode --type memory",
             "usb": "lsusb", "block": "lsblk", "sensors": "sensors",
             "summary": "uname -a",
         }
@@ -582,6 +583,10 @@ def synthesize_command(call: ParsedCall) -> str:
             # faithfully as a listing of the connection profiles so a pure read
             # stays ALLOW (no gate friction — I8) without weakening the gate.
             return "ls /etc/NetworkManager/system-connections"
+        if op == "listening":
+            return "ss -tulpn"
+        if op == "current":
+            return "ip route show default"
         if op == "interfaces":
             return "ip link show"
         if op == "wifi":
@@ -832,6 +837,13 @@ class Repl:
                 from core.agent import nocallguard
 
                 _dispatched = outcome.tool_calls_made + outcome.refused
+                if nocallguard.is_runtime_echo(result.english_content):
+                    text = (nocallguard.STEP_FAILED_TEXT if _dispatched
+                            else nocallguard.NOTHING_RAN_TEXT)
+                    outcome.final_text = text
+                    outcome.ended_in_english = True
+                    self._safe_render(text)
+                    break
                 if nocallguard.should_block(user_input, result.english_content, _dispatched):
                     self._audit.write(
                         tier=self._tier_label, nl_input=user_input,
@@ -1151,7 +1163,15 @@ class Repl:
             return "not run"
         if code == 0:
             return "done"
-        return f"exit {code}"
+        if code == 127:
+            return "exit 127: that program is not installed here"
+        detail = ""
+        for text in (getattr(result, "summary", "") or "", getattr(result, "stderr", "") or ""):
+            line = text.strip().splitlines()[0].strip() if text.strip() else ""
+            if line:
+                detail = line[:140]
+                break
+        return f"exit {code}: {detail}" if detail else f"exit {code}"
 
     def _safe_dispatch(self, call: ParsedCall) -> ToolResult:
         """Dispatch a validated call; turn any execution error into a ToolResult.

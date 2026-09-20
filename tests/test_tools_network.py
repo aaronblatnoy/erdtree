@@ -93,7 +93,7 @@ class TestRegistration(unittest.TestCase):
     def test_all_expected_ops_present(self):
         spec = registry.get("network")
         self.assertIsNotNone(spec)
-        expected = {"show", "status", "connections", "interfaces", "wifi",
+        expected = {"show", "status", "connections", "interfaces", "listening", "current", "wifi",
                     "bring_up", "bring_down", "set_ip"}
         self.assertEqual(set(spec.ops.keys()), expected)
 
