@@ -18,7 +18,17 @@
 set -uo pipefail
 BUDGET="${1:?budget usd}"; HOURLY="${2:?hourly usd}"; shift 2
 [ "${1:-}" = "--" ] && shift
-POD="${RUNPOD_POD_ID:?not on a RunPod pod}"
+# SSH sessions on RunPod images do not inherit the container's environment; the
+# pod id and the pod-scoped API key live in PID 1's environment.
+if [ -z "${RUNPOD_POD_ID:-}" ] && [ -r /proc/1/environ ]; then
+  while IFS= read -r -d '' kv; do
+    case "$kv" in RUNPOD_POD_ID=*|RUNPOD_API_KEY=*) export "$kv" ;; esac
+  done < /proc/1/environ
+fi
+POD="${RUNPOD_POD_ID:?not on a RunPod pod (RUNPOD_POD_ID missing)}"
+# runpodctl is unauthorised until configured with the pod-scoped key; verified
+# 2026-09-20 that `runpodctl stop pod <self>` succeeds after this.
+runpodctl config --apiKey "${RUNPOD_API_KEY:-}" > /dev/null 2>&1 || true
 SECS=$(python3 -c "print(int(float('$BUDGET')/float('$HOURLY')*3600))")
 LOG=/workspace/pod_guard.log
 
