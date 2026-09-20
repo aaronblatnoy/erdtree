@@ -213,9 +213,32 @@ def _op_summary(args: dict[str, Any]) -> ToolResult:
 
 # ---------------------------------------------------------------------------
 # Dispatch table
+def _op_gpu(args: dict[str, Any]) -> ToolResult:
+    """GPUs: count, name, VRAM total/used, driver.  nvidia-smi when present,
+    otherwise the display-class devices from lspci."""
+    result = run_subprocess([
+        "nvidia-smi",
+        "--query-gpu=index,name,memory.total,memory.used,utilization.gpu,driver_version",
+        "--format=csv",
+    ])
+    if result.ok and result.stdout.strip():
+        count = max(0, len([l for l in result.stdout.splitlines() if l.strip()]) - 1)
+        return ToolResult(exit_code=0, stdout=result.stdout, stderr=result.stderr,
+                          summary=f"{count} GPU(s) detected.")
+    pci = run_subprocess(["lspci"])
+    if pci.ok:
+        lines = [l for l in pci.stdout.splitlines()
+                 if any(k in l for k in ("VGA compatible", "3D controller", "Display controller"))]
+        return ToolResult(exit_code=0, stdout="\n".join(lines) + ("\n" if lines else ""), stderr="",
+                          summary=f"{len(lines)} display device(s) on the PCI bus (no vendor GPU utility available for VRAM detail).")
+    return ToolResult(exit_code=pci.exit_code, stdout="", stderr=pci.stderr,
+                      summary=f"GPU query failed (exit {pci.exit_code})." + _maybe_selinux_hint(pci.stderr))
+
+
 # ---------------------------------------------------------------------------
 
 _DISPATCH: dict[str, Any] = {
+    "gpu":     _op_gpu,
     "cpu":     _op_cpu,
     "memory":  _op_memory,
     "pci":     _op_pci,
@@ -270,6 +293,12 @@ HARDWARE_SPEC = ToolSpec(
             permission_class=OpClass.READ,
             args=[],
             description="Show RAM and swap usage.",
+        ),
+        "gpu": OpSpec(
+            op_name="gpu",
+            permission_class=OpClass.READ,
+            args=[],
+            description="GPUs / graphics cards: count, VRAM, driver.",
         ),
         "pci": OpSpec(
             op_name="pci",

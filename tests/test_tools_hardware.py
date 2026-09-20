@@ -84,7 +84,7 @@ class TestRegistration(unittest.TestCase):
     def test_all_ops_present(self) -> None:
         spec = registry.get("hardware")
         self.assertIsNotNone(spec)
-        expected = {"cpu", "memory", "pci", "usb", "block", "sensors", "summary"}
+        expected = {"cpu", "memory", "gpu", "pci", "usb", "block", "sensors", "summary"}
         self.assertEqual(set(spec.ops.keys()), expected)
 
 

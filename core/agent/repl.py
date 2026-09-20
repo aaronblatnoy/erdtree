@@ -477,7 +477,7 @@ def synthesize_command(call: ParsedCall) -> str:
     # hardware.* — every op is a pure READ lister; emit the real read argv.
     if call.tool == "hardware":
         _HW = {
-            "cpu": "lscpu", "memory": "free -h", "pci": "lspci",
+            "cpu": "lscpu", "memory": "free -h", "pci": "lspci", "gpu": "nvidia-smi",
             "usb": "lsusb", "block": "lsblk", "sensors": "sensors",
             "summary": "uname -a",
         }

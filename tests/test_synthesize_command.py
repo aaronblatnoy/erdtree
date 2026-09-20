@@ -74,6 +74,7 @@ _CASES: list[tuple[str, str, dict, OpClass, Gate]] = [
     ("hardware", "cpu", {}, OpClass.READ, Gate.ALLOW),
     ("hardware", "memory", {}, OpClass.READ, Gate.ALLOW),
     ("hardware", "pci", {}, OpClass.READ, Gate.ALLOW),
+    ("hardware", "gpu", {}, OpClass.READ, Gate.ALLOW),
     ("hardware", "usb", {}, OpClass.READ, Gate.ALLOW),
     ("hardware", "block", {}, OpClass.READ, Gate.ALLOW),
     ("hardware", "sensors", {}, OpClass.READ, Gate.ALLOW),

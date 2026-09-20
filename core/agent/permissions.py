@@ -117,7 +117,7 @@ _READ_COMMANDS = frozenset(
         "id", "groups", "date", "cal", "echo", "printf", "pwd", "which",
         "whereis", "type", "env", "printenv", "ps", "top", "htop", "pgrep",
         "lsof", "ss", "netstat", "ip", "ping", "dig", "host", "nslookup",
-        "traceroute", "lsblk", "blkid", "lscpu", "lsmem", "lspci", "lsusb",
+        "traceroute", "lsblk", "blkid", "lscpu", "lsmem", "lspci", "lsusb", "nvidia-smi",
         "lsmod", "dmesg", "journalctl", "rpm", "dnf", "dpkg", "apt", "man",
         "info", "history", "alias", "git", "systemctl", "service", "mount",
         "readlink", "realpath", "dirname", "basename", "md5sum", "sha256sum",

@@ -66,11 +66,21 @@ _SYNONYMS: dict[str, tuple[str, ...]] = {
     "packages": ("install", "uninstall", "upgrade", "update", "package", "dnf", "yum", "rpm"),
     "processes": ("process", "pid", "kill", "hung", "stuck", "renice", "top"),
     "disk": ("disk", "space", "full", "mount", "unmount", "partition", "format", "filesystem", "df", "usage"),
-    "logs": ("log", "logs", "journal", "dmesg", "errors", "why", "crash", "crashed", "failing"),
     "network": ("network", "interface", "ip", "link", "ping", "connectivity", "eth0", "nic"),
     "users": ("user", "users", "account", "password", "login", "sudo", "group", "wheel"),
     "docs": ("how", "what", "explain", "difference", "syntax", "meaning", "option", "mean"),
+    "hardware": ("gpu", "gpus", "vram", "graphics", "video", "card", "cards", "nvidia", "amd", "radeon", "cuda",
+                 "cpu", "cores", "processor", "ram", "memory", "motherboard", "pci", "usb", "sensors",
+                 "temperature", "temps", "fan", "fans", "hardware", "specs", "device", "computer", "machine"),
+    "performance": ("slow", "load", "busy", "cpu", "iowait", "bottleneck", "sluggish", "lag"),
+    "logs": ("log", "logs", "journal", "dmesg", "errors", "why", "crash", "crashed", "failing"),
 }
+
+# When a request matches almost nothing, advertise the everyday tools rather
+# than whatever sorts first alphabetically.
+_GENERAL = ("hardware", "services", "packages", "disk", "network", "logs", "processes", "files", "users",
+            "performance", "docs")
+_MIN_SIGNAL = 8.0
 
 
 class ToolSelector:
@@ -127,7 +137,10 @@ class ToolSelector:
         conversation (the tool of a previous call in the same turn).
         """
         k = self._k if k is None else max(1, k)
-        chosen = {name for _, name in self.rank(user_input)[:k]}
+        ranked = self.rank(user_input)
+        chosen = {name for score, name in ranked[:k] if score > 0}
+        if not ranked or ranked[0][0] < _MIN_SIGNAL:
+            chosen.update(n for n in _GENERAL if n in self._docs)
         chosen.update(n for n in self._always if n in self._docs)
         chosen.update(n for n in extra if n in self._docs)
         return [n for n in self._docs if n in chosen]
