@@ -216,10 +216,16 @@ def _op_summary(args: dict[str, Any]) -> ToolResult:
 def _op_memory_modules(args: dict[str, Any]) -> ToolResult:
     """Installed RAM modules: size, type, speed, manufacturer, part number."""
     # udev exports the firmware memory table without needing root.
-    udev = run_subprocess(["udevadm", "info", "-p", "/sys/devices/virtual/dmi/id"])
-    if udev.ok and "MEMORY_DEVICE_" in udev.stdout:
+    udev_text = ""
+    try:
+        with open("/run/udev/data/+dmi:id", encoding="utf-8", errors="replace") as fh:
+            udev_text = fh.read()
+    except OSError:
+        udev = run_subprocess(["udevadm", "info", "-p", "/sys/devices/virtual/dmi/id"])
+        udev_text = udev.stdout if udev.ok else ""
+    if "MEMORY_DEVICE_" in udev_text:
         slots: dict[str, dict[str, str]] = {}
-        for line in udev.stdout.splitlines():
+        for line in udev_text.splitlines():
             if "MEMORY_DEVICE_" not in line or "=" not in line:
                 continue
             key, value = line.split("MEMORY_DEVICE_", 1)[1].split("=", 1)

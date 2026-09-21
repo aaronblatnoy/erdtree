@@ -68,6 +68,7 @@ exec podman run --rm -it \
   --security-opt label=disable \
   -v "$REPO":/opt/erdtree:ro \
   -v /sys:/sys:ro \
+  -v /run/udev/data:/run/udev/data:ro \
   "${GPU_ARGS[@]}" \
   -e ERDTREE_TIER="$TIER" \
   -e ERDTREE_MODEL="$MODEL" \
