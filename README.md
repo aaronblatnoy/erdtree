@@ -4,11 +4,11 @@
 
 I recently set up my first server on Linux Arch. Nothing crazy. Just getting services running, configuring storage, opening the right ports. But I kept hitting the same wall: I knew *what* I wanted to do, I just didn't know the command. So I'd tab over to Claude, describe what I needed, paste the command back into the terminal, and run it. This was a hassle.
 
-Eventually I set up Claude Code on the server so I could talk to it directly. Type what I wanted in plain English, it would figure out the commands and run them. This works remarkably well. But it also felt like a workaround -- bolting a natural language interface onto an OS that was never designed for it, dependent on a cloud API, sending every command and context to someone else's servers.
+Eventually I set up Claude Code on the server so I could talk to it directly. I'd tell Claude what I wanted in plain English, and it would figure out the commands and run them. This works remarkably well. But it also felt like a workaround -- bolting a natural language interface onto an OS that was never designed for it, dependent on a cloud API, sending every command and context to someone else's servers.
 
 That's when the question hit me:
 
-**What if Linux just understood English? And what if the model doing the understanding was purpose-built for exactly this?**
+**What if Linux just understood English straight out of the box?**
 
 ---
 
