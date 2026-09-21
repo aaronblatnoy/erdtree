@@ -46,14 +46,14 @@ The model's job is narrow on purpose. It receives the request, a live snapshot o
 | Model | Tier | Base | Trained on | Status |
 |-------|------|------|------------|--------|
 | `marika-v2.1` | Linux Marika | Qwen2.5-7B-Instruct | corpus v3, 6,543 traces | current |
-| `radagon-v3` | Linux Radagon | Qwen3-30B-A3B-Instruct-2507 (mixture of experts, about 3B parameters active per token) | corpus v3, LoRA on attention and expert layers | trained 2026-09-21, evaluation pending |
+| `radagon-v3` | Linux Radagon | Qwen3-30B-A3B-Instruct-2507 (mixture of experts, about 3B parameters active per token) | corpus v3, LoRA on attention and expert layers | current |
 
 Held-out results, percent of requests where the model chose the right tool and operation. Neither pool is ever trained on.
 
 | Model | First request (100) | Follow-up (80) |
 |-------|---------------------|----------------|
 | `marika-v2.1` | 94 | 88 |
-| `radagon-v3` | pending | pending |
+| `radagon-v3` | 96 | 88 |
 | untuned Qwen2.5-7B, for reference | 72 | 81 |
 | untuned Qwen3-30B-A3B, for reference | 69 | not run |
 
@@ -188,9 +188,9 @@ Active buildout. The agent loop runs end to end on local models today. Not produ
 - 55 system tools, the deterministic permission gate, and an append-only audit log.
 - Local document retrieval over the machine's own man pages and Rocky admin docs, built and queried on the box with no network, plus rolling compaction and episodic recall so sessions never hit a context wall.
 - The fine-tuning pipeline end to end: corpus v3 (6,543 records, answers derived from simulated tool output, 655 multi-turn and 180 contrastive records), training, export to GGUF, and held-out evaluation.
-- `marika-v2.1` published and set as the sandbox default. `radagon-v3` trained.
+- `marika-v2.1` and `radagon-v3` trained, evaluated and published. `marika-v2.1` is the sandbox default.
 
-**Still ahead:** evaluating and publishing `radagon-v3`, per-tier configuration plumbing, how the reference corpus ships (bundled in the image or built on first boot), and the bootable ISO installer.
+**Still ahead:** per-tier configuration plumbing, how the reference corpus ships (bundled in the image or built on first boot), and the bootable ISO installer.
 
 ---
 

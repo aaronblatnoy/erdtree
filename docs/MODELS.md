@@ -1,6 +1,6 @@
 # Erdtree models: training and evaluation record
 
-Last updated 2026-09-20. Weights for every model listed here are published under
+Last updated 2026-09-21. Weights for every model listed here are published under
 [Releases](https://github.com/aaronblatnoy/erdtree/releases).
 
 ## What the models do
@@ -19,7 +19,8 @@ output. The model never runs anything itself.
 | `marika-ft` | Qwen2.5-3B-Instruct | QLoRA, 1 epoch, loss on all tokens | corpus v1, 2,721 single-turn traces | superseded |
 | `marika-v2` | Qwen2.5-7B-Instruct | NF4 QLoRA, 2 epochs, assistant-token loss | corpus v2, 5,742 single-turn traces | superseded (follow-up defect, see below) |
 | `marika-v2.1` | Qwen2.5-7B-Instruct | NF4 QLoRA, 2 epochs, assistant-token loss | corpus v3, 6,543 traces | **current Marika tier** |
-| `radagon-ft` | Qwen3-30B-A3B-Instruct-2507 (mixture of experts, about 3B active) | bf16 LoRA on attention projections only, 2 epochs | corpus v2 | to be retrained on corpus v3 |
+| `radagon-v3` | Qwen3-30B-A3B-Instruct-2507 (mixture of experts, about 3B active) | bf16 LoRA r=16 on attention projections and the fused expert tensors (PEFT `target_parameters`), 2 epochs, 818 steps, final train loss 0.038 | corpus v3, 6,543 traces | **current Radagon tier** |
+| `radagon-ft` | same 30B base | bf16 LoRA on attention projections only, 2 epochs | corpus v2 | superseded (follow-up defect) |
 
 Licenses follow the bases: Qwen2.5-3B is under the Qwen Research License (non-commercial);
 Qwen2.5-7B and Qwen3-30B-A3B are Apache 2.0.
@@ -51,6 +52,7 @@ re-ask round when a call fails schema validation. Checks, as a percentage of rec
 | Model | First request: tool + operation | accepted | required args | Follow-up: called | tool + operation | required args |
 |-------|------|------|------|------|------|------|
 | `marika-v2.1` | **94** | **96** | **84** | **100** | **88** | **80** |
+| `radagon-v3` | **96** | **99** | **85** | **100** | **88** | **81** |
 | `marika-v2` | 92 | 91 | 78 | 4 | 4 | 4 |
 | `marika-ft` | 64 | 65 | 51 | 89 | 74 | 63 |
 | `radagon-ft` | 84 | 83 | 71 | 5 | 5 | 5 |
@@ -95,7 +97,11 @@ No model produced a banned word in any reply.
   96 GB card the bf16 model trains at 28 s per 16-record step with attention-only LoRA.
   transformers 5 fuses the experts into 3-D parameters that module-level LoRA cannot wrap;
   transformers 4.57 exposes them as linears but runs 2.7x slower before any adapter is added.
-  The planned rerun uses PEFT parameter-level LoRA on the fused tensors.
+  `radagon-v3` uses PEFT parameter-level LoRA (`target_parameters`) on the 96 fused expert
+  tensors plus the 192 attention modules: 38 s per step, 8.7 hours for 818 steps, about 19 USD.
+  The merged model saves back in the per-expert layout, so llama.cpp converts it unchanged.
+  On black-sky the 4-bit 30B runs mostly from system memory: about 20 s per request against
+  about 1.7 s for the 7B, for 2 points more on first requests and the same follow-up score.
 - Rented pods must run under `finetune/train/pod_guard.sh`, which stops the pod when the job
   exits and at a hard spend cap. Pull the small adapter and terminate; build GGUFs locally.
 - Export pitfalls: a Modelfile without the chat template makes the model run on forever; Ollama's
