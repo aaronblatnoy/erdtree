@@ -62,7 +62,28 @@ if command -v nvidia-smi >/dev/null 2>&1; then
   done
 fi
 
-exec podman run --rm -it \
+# --- Containers, READ-ONLY: the host's engine sockets are never mounted. A host
+#     side filter (ro_socket_proxy.py) forwards only HTTP GET/HEAD, so the sandbox
+#     can list and inspect containers but cannot start, stop, exec or remove one.
+SOCK_DIR="$(mktemp -d)"
+SOCK_ARGS=(); SOCK_ENV=""; PROXY_PIDS=()
+cleanup() { for p in "${PROXY_PIDS[@]:-}"; do kill "$p" 2>/dev/null || true; done; rm -rf "$SOCK_DIR"; }
+trap cleanup EXIT
+systemctl --user start podman.socket 2>/dev/null || true
+for pair in "podman=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock" "docker=/var/run/docker.sock"; do
+  label="${pair%%=*}"; real="${pair#*=}"
+  if [ -S "$real" ] && [ -r "$real" ] && [ -w "$real" ]; then
+    python3 "$REPO/sandbox/ro_socket_proxy.py" "$real" "$SOCK_DIR/$label.sock" &
+    PROXY_PIDS+=("$!")
+    SOCK_ENV="${SOCK_ENV:+$SOCK_ENV,}$label=/run/erdtree-sockets/$label.sock"
+  fi
+done
+if [ -n "$SOCK_ENV" ]; then
+  sleep 0.3
+  SOCK_ARGS+=(-v "$SOCK_DIR":/run/erdtree-sockets -e ERDTREE_CONTAINER_SOCKETS="$SOCK_ENV")
+fi
+
+podman run --rm -it \
   --network=host \
   --hostname "$(uname -n 2>/dev/null || echo erdtree)" \
   --security-opt label=disable \
@@ -70,6 +91,7 @@ exec podman run --rm -it \
   -v /sys:/sys:ro \
   -v /run/udev/data:/run/udev/data:ro \
   "${GPU_ARGS[@]}" \
+  "${SOCK_ARGS[@]}" \
   -e ERDTREE_TIER="$TIER" \
   -e ERDTREE_MODEL="$MODEL" \
   -e ERDTREE_BASE_URL=http://localhost:11434 \

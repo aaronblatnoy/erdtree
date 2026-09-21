@@ -101,6 +101,16 @@ _IMAGE_ARG = ArgSpec(
 def _op_ps(args: dict[str, Any]) -> ToolResult:
     """podman ps [--all]"""
     show_all: bool = bool(args.get("all", False))
+    from core.tools import _container_api
+    if _container_api.configured_sockets():
+        rows = _container_api.list_containers(show_all)
+        lines = [f"{'ENGINE':8} {'NAME':40} {'STATE':10} {'HOST PORTS':22} IMAGE"]
+        for r in rows:
+            ports = ",".join(f"{p}/{t}" for p, t in r["ports"]) or "-"
+            lines.append(f"{r['engine']:8} {r['name'][:40]:40} {r['state'][:10]:10} {ports[:22]:22} {r['image']}")
+        qualifier = "all" if show_all else "running"
+        return ToolResult(exit_code=0, stdout="\n".join(lines) + "\n", stderr="",
+                          summary=f"Listed {len(rows)} {qualifier} container(s).")
     cmd = ["podman", "ps"]
     if show_all:
         cmd.append("--all")

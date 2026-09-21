@@ -170,12 +170,24 @@ def _op_listening(args: dict[str, Any]) -> ToolResult:
     """ss -tulpn — listening TCP/UDP sockets with the owning process."""
     result = run_subprocess(["ss", "-tulpn"])
     selinux = _maybe_selinux_hint(result.stderr)
+    stdout = result.stdout
     if result.ok:
         count = max(0, len([l for l in result.stdout.splitlines() if l.strip()]) - 1)
         summary = f"{count} listening socket(s), with the owning process where visible."
+        # Ports published by containers are held by the engine's proxy process,
+        # so name the container that each published port belongs to.
+        try:
+            from core.tools import _container_api
+            published = [(p, t, r["name"]) for r in _container_api.list_containers() for p, t in r["ports"]]
+        except Exception:
+            published = []
+        if published:
+            stdout += "\nPorts published by containers:\n" + "".join(
+                f"  {p}/{t:4} -> {name}\n" for p, t, name in sorted(published))
+            summary += f" {len(published)} port(s) belong to containers."
     else:
         summary = f"Listening-socket query failed (exit {result.exit_code})."
-    return ToolResult(exit_code=result.exit_code, stdout=result.stdout, stderr=result.stderr,
+    return ToolResult(exit_code=result.exit_code, stdout=stdout, stderr=result.stderr,
                       summary=summary + selinux)
 
 
