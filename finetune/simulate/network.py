@@ -211,6 +211,35 @@ def _sim_interfaces(args: dict, ctx: str) -> dict:
     return {"exit_code": 0, "stdout": _INTERFACES_OUTPUT, "stderr": "", "summary": summary}
 
 
+def _sim_listening(args: dict, ctx: str) -> dict:
+    """ss -tulpn output."""
+    if _fail_variant("listening", args, ctx):
+        summary = "Listening-socket query failed (exit 127)."
+        assert_no_ai_language(summary)
+        return {"exit_code": 127, "stdout": "", "stderr": "ss: command not found", "summary": summary}
+    out = ("Netid State  Recv-Q Send-Q Local Address:Port Peer Address:Port Process\n"
+           "tcp   LISTEN 0      128          0.0.0.0:22        0.0.0.0:*     users:((\"sshd\",pid=1042,fd=3))\n"
+           "tcp   LISTEN 0      511          0.0.0.0:80        0.0.0.0:*     users:((\"nginx\",pid=1377,fd=6))\n"
+           "tcp   LISTEN 0      244        127.0.0.1:5432      0.0.0.0:*     users:((\"postgres\",pid=1511,fd=5))\n")
+    summary = "3 listening socket(s), with the owning process where visible."
+    assert_no_ai_language(summary)
+    return {"exit_code": 0, "stdout": out, "stderr": "", "summary": summary}
+
+
+def _sim_current(args: dict, ctx: str) -> dict:
+    """Default route, interface, DNS."""
+    if _fail_variant("current", args, ctx):
+        summary = "No default route: this machine is not connected to a network."
+        assert_no_ai_language(summary)
+        return {"exit_code": 1, "stdout": "", "stderr": "", "summary": summary}
+    out = ("default route: via 10.0.0.1 on eth0\n"
+           "interface:     eth0 UP 10.0.0.15/24\n"
+           "dns servers:   10.0.0.2, 10.0.0.3\n")
+    summary = "Connected through eth0, gateway 10.0.0.1."
+    assert_no_ai_language(summary)
+    return {"exit_code": 0, "stdout": out, "stderr": "", "summary": summary}
+
+
 def _sim_wifi(args: dict, ctx: str) -> dict:
     """nmcli wifi SSID query output."""
     fail = _fail_variant("wifi", args, ctx)
@@ -330,6 +359,8 @@ _DISPATCH: dict[str, Any] = {
     "status":      _sim_status,
     "connections": _sim_connections,
     "interfaces":  _sim_interfaces,
+    "listening":   _sim_listening,
+    "current":     _sim_current,
     "wifi":        _sim_wifi,
     "bring_up":    _sim_bring_up,
     "bring_down":  _sim_bring_down,

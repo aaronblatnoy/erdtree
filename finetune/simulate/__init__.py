@@ -315,6 +315,8 @@ _PROBE_ARGS: dict[tuple[str, str], dict] = {
     ("hardware", "memory"):  {},
     ("hardware", "block"):   {},
     ("hardware", "pci"):     {},
+    ("hardware", "gpu"):     {},
+    ("hardware", "memory_modules"): {},
     ("hardware", "usb"):     {},
     ("hardware", "sensors"): {},
     # hostname — all args optional
@@ -371,6 +373,8 @@ _PROBE_ARGS: dict[tuple[str, str], dict] = {
     ("mariadb", "status"):        {},
     # network
     ("network", "interfaces"):  {},
+    ("network", "listening"):   {},
+    ("network", "current"):     {},
     ("network", "connections"): {},
     ("network", "status"):      {},
     ("network", "wifi"):        {},

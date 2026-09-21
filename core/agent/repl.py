@@ -810,6 +810,7 @@ class Repl:
         new_msgs_start = len(messages)
 
         _nocall_reasked = False
+        _empty_reasked = False
         for _round in range(self._max_rounds):
             outcome.rounds += 1
             # THE UnderstandingStrategy seam (owned by P1/P5 — P6/P7/P8 MUST NOT
@@ -829,6 +830,13 @@ class Repl:
 
             # Record the assistant turn into history (OpenAI shape).
             messages.append(self._assistant_message(result.raw_content, result.raw_calls))
+
+            if (not result.english_content and not result.misses and not result.calls
+                    and not _empty_reasked):
+                # Empty reply: nothing said, nothing called.  Ask once more.
+                _empty_reasked = True
+                messages.append({"role": "user", "content": nocallguard_reask()})
+                continue
 
             if result.english_content and not result.misses and not result.calls:
                 # No-call guard: a prose "result" with nothing dispatched this
@@ -1197,7 +1205,9 @@ class Repl:
     @staticmethod
     def _assistant_message(content: str, raw_calls: list[dict]) -> dict:
         """Build the OpenAI assistant message to append to history (0002 §2)."""
-        msg: dict[str, Any] = {"role": "assistant", "content": content or None}
+        # content may be null ONLY alongside tool_calls; a bare null body is
+        # rejected by the backend (HTTP 400) and would kill the turn.
+        msg: dict[str, Any] = {"role": "assistant", "content": content or (None if raw_calls else "")}
         if raw_calls:
             tcs = []
             for rc in raw_calls:
@@ -1219,6 +1229,11 @@ class Repl:
 # --------------------------------------------------------------------------- #
 # Interactive loop driver                                                      #
 # --------------------------------------------------------------------------- #
+
+def nocallguard_reask() -> str:
+    from core.agent import nocallguard
+    return nocallguard.REASK_TEXT
+
 
 def interactive_loop(
     repl: Repl,

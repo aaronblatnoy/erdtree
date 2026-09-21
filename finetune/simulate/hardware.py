@@ -487,6 +487,34 @@ def _op_summary_partial_failure(ctx: Any) -> dict:
     return {"exit_code": 127, "stdout": combined, "stderr": stderr, "summary": summary}
 
 
+def _op_gpu_success(ctx: Any) -> dict:
+    raw = ("index, name, memory.total [MiB], memory.used [MiB], utilization.gpu [%], driver_version\n"
+           "0, NVIDIA L4, 23034 MiB, 412 MiB, 3 %, 550.90.07\n")
+    summary = "1 GPU(s) detected."
+    assert_no_ai_language(summary)
+    return {"exit_code": 0, "stdout": raw, "stderr": "", "summary": summary}
+
+
+def _op_gpu_failure(ctx: Any) -> dict:
+    summary = "No GPU found: no NVIDIA driver and no display-class PCI device."
+    assert_no_ai_language(summary)
+    return {"exit_code": 1, "stdout": "", "stderr": "nvidia-smi: command not found\n", "summary": summary}
+
+
+def _op_memory_modules_success(ctx: Any) -> dict:
+    raw = ("DIMM_A1: 32 GB DDR4 DIMM, rated 3200 MT/s, running 2933 MT/s, maker Samsung, part M393A4K40DB3-CWE, rank 2\n"
+           "DIMM_B1: 32 GB DDR4 DIMM, rated 3200 MT/s, running 2933 MT/s, maker Samsung, part M393A4K40DB3-CWE, rank 2\n")
+    summary = "2 memory module(s) installed of 4 slot(s)."
+    assert_no_ai_language(summary)
+    return {"exit_code": 0, "stdout": raw, "stderr": "", "summary": summary}
+
+
+def _op_memory_modules_failure(ctx: Any) -> dict:
+    summary = "Memory module details need firmware (DMI) table access, which is not available here."
+    assert_no_ai_language(summary)
+    return {"exit_code": 1, "stdout": "", "stderr": "/dev/mem: Permission denied\n", "summary": summary}
+
+
 # ---------------------------------------------------------------------------
 # Dispatch table — keyed on (op, variant)
 # variant=0 → success, variant=1 → first failure, variant=2 → second failure
@@ -496,6 +524,8 @@ _SUCCESS_HANDLERS = {
     "cpu":     _op_cpu_success,
     "memory":  _op_memory_success,
     "pci":     _op_pci_success,
+    "gpu":     _op_gpu_success,
+    "memory_modules": _op_memory_modules_success,
     "usb":     _op_usb_success,
     "block":   _op_block_success,
     "sensors": _op_sensors_success,
@@ -506,6 +536,8 @@ _FAILURE_HANDLERS = {
     "cpu":     [_op_cpu_failure],
     "memory":  [_op_memory_failure],
     "pci":     [_op_pci_failure],
+    "gpu":     [_op_gpu_failure],
+    "memory_modules": [_op_memory_modules_failure],
     "usb":     [_op_usb_failure],
     "block":   [_op_block_failure],
     "sensors": [_op_sensors_failure_not_found, _op_sensors_failure_no_sensors],
