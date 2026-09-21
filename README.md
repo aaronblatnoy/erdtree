@@ -41,27 +41,33 @@ General-purpose LLMs, even strong ones, underperform at small scale on Linux ope
 
 The model's job is narrow on purpose. It receives the request, a live snapshot of the machine, and the schemas of the tools relevant to that request. It replies with one structured tool call: a tool name plus arguments. It never runs anything itself. The runtime validates the call, applies the permission gate, executes it, and asks the model for a short operator-style summary of the real output.
 
-| Model | Base | Trained on | Status |
-|-------|------|------------|--------|
-| `marika-v2.1` | Qwen2.5-7B-Instruct | corpus v3, 6,543 traces | **current Marika tier** |
-| `radagon-v3` | Qwen3-30B-A3B-Instruct-2507 (mixture of experts, about 3B parameters active per token) | corpus v3, LoRA on attention and expert layers | trained 2026-09-21, evaluation pending |
-| `radagon-ft` | same 30B base | corpus v2, attention-only LoRA | superseded |
-| `marika-v2` | Qwen2.5-7B-Instruct | corpus v2 | superseded |
-| `marika-ft` | Qwen2.5-3B-Instruct | corpus v1 | superseded |
+### Current models
+
+| Model | Tier | Base | Trained on | Status |
+|-------|------|------|------------|--------|
+| `marika-v2.1` | Linux Marika | Qwen2.5-7B-Instruct | corpus v3, 6,543 traces | current |
+| `radagon-v3` | Linux Radagon | Qwen3-30B-A3B-Instruct-2507 (mixture of experts, about 3B parameters active per token) | corpus v3, LoRA on attention and expert layers | trained 2026-09-21, evaluation pending |
 
 Held-out results, percent of requests where the model chose the right tool and operation. Neither pool is ever trained on.
 
 | Model | First request (100) | Follow-up (80) |
 |-------|---------------------|----------------|
 | `marika-v2.1` | 94 | 88 |
-| `marika-v2` | 92 | 4 |
-| `marika-ft` | 64 | 74 |
-| `radagon-ft` | 84 | 5 |
-| untuned Qwen2.5-7B | 72 | 81 |
-| untuned Qwen2.5-3B | 44 | not run |
-| untuned Qwen3-30B-A3B | 69 | not run |
+| `radagon-v3` | pending | pending |
+| untuned Qwen2.5-7B, for reference | 72 | 81 |
+| untuned Qwen3-30B-A3B, for reference | 69 | not run |
 
-The collapse to 4 and 5 on follow-ups came from training only on single-request records: the model learned to write a plausible result instead of calling a tool. Corpus v3 adds multi-turn records and fixes it. The full method, results and lessons are in [docs/MODELS.md](docs/MODELS.md).
+### Superseded models
+
+Kept for the record. Their weights remain under Releases, but none of them should be used.
+
+| Model | Base | Trained on | First request | Follow-up |
+|-------|------|------------|---------------|-----------|
+| `radagon-ft` | Qwen3-30B-A3B-Instruct-2507 | corpus v2, attention-only LoRA | 84 | 5 |
+| `marika-v2` | Qwen2.5-7B-Instruct | corpus v2 | 92 | 4 |
+| `marika-ft` | Qwen2.5-3B-Instruct | corpus v1 | 64 | 74 |
+
+The follow-up scores of 4 and 5 came from training only on single-request records: the model learned to write a plausible result instead of calling a tool. Corpus v3 adds multi-turn records and fixes it. The full method, results and lessons are in [docs/MODELS.md](docs/MODELS.md).
 
 ### Download and run a model on its own
 
