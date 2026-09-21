@@ -94,8 +94,13 @@ def _parse_call(m: dict):
     return fn.get("name"), args
 
 
-def _judge(name, args, ref_tool, ref_args):
-    out = {"tool": name == ref_tool, "op": False, "valid": False, "args": False, "args_req": False, "err": ""}
+def _judge(name, args, ref_tool, ref_args, item_id=None):
+    """Score one call.  Keys tool/op/args/args_req are RAW (reference only).  Keys adj_op and
+    adj_args_req apply finetune/scenarios/eval_adjudication.py (documented second answers,
+    free-text arguments, values the request never states)."""
+    from finetune.scenarios import eval_adjudication as adj
+    out = {"tool": name == ref_tool, "op": False, "valid": False, "args": False, "args_req": False,
+           "adj_op": False, "adj_args_req": False, "err": ""}
     ref_op = ref_args.get("operation")
     out["op"] = out["tool"] and args.get("operation") == ref_op
     spec = coreimports.registry.get(name) if name else None
@@ -114,6 +119,20 @@ def _judge(name, args, ref_tool, ref_args):
     if out["op"]:
         req = {a.name for a in spec.ops[ref_op].args if a.required} | {"operation"}
         out["args_req"] = all(_norm(args.get(k)) == _norm(ref_args.get(k)) for k in req)
+        skip = adj.UNSTATED_ARGS.get(item_id, set())
+        def _ok(k):
+            if k in skip:
+                return True
+            if k in adj.FREE_TEXT_ARGS:
+                return bool(str(args.get(k) or "").strip())
+            return _norm(args.get(k)) == _norm(ref_args.get(k))
+        out["adj_op"] = True
+        out["adj_args_req"] = all(_ok(k) for k in req)
+    elif f"{name}.{args.get('operation')}" in adj.ALSO_OK.get(item_id, {}):
+        # A documented second correct answer: the operation counts, and its arguments count
+        # when the live validator accepts them (there is no reference to compare against).
+        out["adj_op"] = True
+        out["adj_args_req"] = out["valid"]
     return out
 
 
@@ -132,9 +151,10 @@ def score_one(model: str, rec: dict, num_ctx: int) -> dict:
     if name is None:
         return out
     out["called"] = True
-    j = _judge(name, args, ref_tool, ref_args)
-    out.update({k: j[k] for k in ("tool", "op", "valid", "args", "args_req")})
+    j = _judge(name, args, ref_tool, ref_args, out["id"])
+    out.update({k: j[k] for k in ("tool", "op", "valid", "args", "args_req", "adj_op", "adj_args_req")})
     out["chosen"] = f"{name}.{args.get('operation')}"
+    out["got_args"] = args
     out["op2"], out["valid2"] = out["op"], out["valid"]
 
     if not j["valid"] and coreimports.registry.get(name) is not None:
@@ -197,8 +217,9 @@ def score_multiturn(model: str, scn, num_ctx: int, tier: str = "radagon") -> dic
     if name is None:
         return out
     out["called"] = True
-    j = _judge(name, args, t2.tool, dict(t2.args))
-    out.update({k: j[k] for k in ("tool", "op", "valid", "args", "args_req")})
+    j = _judge(name, args, t2.tool, dict(t2.args), out["id"])
+    out.update({k: j[k] for k in ("tool", "op", "valid", "args", "args_req", "adj_op", "adj_args_req")})
+    out["got_args"] = args
     out["op2"], out["valid2"] = out["op"], out["valid"]
     out["chosen"] = f"{name}.{args.get('operation')}"
     return out
@@ -235,6 +256,7 @@ def main(argv=None) -> int:
             summary[model] = {
                 "n": n, "advertised": rate("advertised"), "called": rate("called"), "tool": rate("tool"),
                 "op": rate("op"), "valid": rate("valid"), "args_req": rate("args_req"), "args_exact": rate("args"),
+                "adj_op": rate("adj_op"), "adj_args_req": rate("adj_args_req"),
                 "reask_used": rate("reask"), "op_after_reask": rate("op2"), "valid_after_reask": rate("valid2"),
                 "i2_clean": rate("i2"), "errors": sum("error" in r for r in rows),
                 "sec_per_record": (time.time() - t0) / n,
