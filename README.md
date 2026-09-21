@@ -37,9 +37,43 @@ Erdtree distros ship as ISO installers built on Rocky Linux 9. RHEL-compatible, 
 
 This is the core of what we're building.
 
-General-purpose LLMs, even strong ones, underperform at the 3B-14B parameter scale on Linux operations tasks. They hallucinate flags, misread log formats, generate plausible-looking commands that are wrong for your specific kernel version or package manager state. We are training models that specialize in exactly this domain: system diagnostics, service management, storage operations, network configuration, log analysis, security hardening.
+General-purpose LLMs, even strong ones, underperform at small scale on Linux operations tasks. They hallucinate flags, misread log formats, and generate plausible-looking commands that are wrong for your specific kernel version or package manager state. We train models that specialize in exactly this domain: system diagnostics, service management, storage operations, network configuration, log analysis, security hardening.
 
-The models ship baked into the distro, co-designed with the system context layer they operate in; that pairing is the product. The weights are also published standalone for anyone who wants to run or evaluate them outside the OS: see [Releases](https://github.com/aaronblatnoy/erdtree/releases) for `marika-ft` as a q4_K_M GGUF with an Ollama Modelfile. Standalone, the model is a Qwen2.5-3B that speaks OpenAI-style tool calls and terse operator English; inside Erdtree it gets the live system snapshot, the 55-tool registry, the permission gate, and the audit log.
+The model's job is narrow on purpose. It receives the request, a live snapshot of the machine, and the schemas of the tools relevant to that request. It replies with one structured tool call: a tool name plus arguments. It never runs anything itself. The runtime validates the call, applies the permission gate, executes it, and asks the model for a short operator-style summary of the real output.
+
+| Model | Base | Trained on | Status |
+|-------|------|------------|--------|
+| `marika-v2.1` | Qwen2.5-7B-Instruct | corpus v3, 6,543 traces | **current Marika tier** |
+| `radagon-v3` | Qwen3-30B-A3B-Instruct-2507 (mixture of experts, about 3B parameters active per token) | corpus v3, LoRA on attention and expert layers | trained 2026-09-21, evaluation pending |
+| `radagon-ft` | same 30B base | corpus v2, attention-only LoRA | superseded |
+| `marika-v2` | Qwen2.5-7B-Instruct | corpus v2 | superseded |
+| `marika-ft` | Qwen2.5-3B-Instruct | corpus v1 | superseded |
+
+Held-out results, percent of requests where the model chose the right tool and operation. Neither pool is ever trained on.
+
+| Model | First request (100) | Follow-up (80) |
+|-------|---------------------|----------------|
+| `marika-v2.1` | 94 | 88 |
+| `marika-v2` | 92 | 4 |
+| `marika-ft` | 64 | 74 |
+| `radagon-ft` | 84 | 5 |
+| untuned Qwen2.5-7B | 72 | 81 |
+| untuned Qwen2.5-3B | 44 | not run |
+| untuned Qwen3-30B-A3B | 69 | not run |
+
+The collapse to 4 and 5 on follow-ups came from training only on single-request records: the model learned to write a plausible result instead of calling a tool. Corpus v3 adds multi-turn records and fixes it. The full method, results and lessons are in [docs/MODELS.md](docs/MODELS.md).
+
+### Download and run a model on its own
+
+Every model is published under [Releases](https://github.com/aaronblatnoy/erdtree/releases) as a q4_K_M GGUF with an Ollama Modelfile. Files over 2 GiB are split into parts.
+
+```bash
+cat marika-v2.1-q4_K_M.gguf.part-* > marika-v2.1-q4_K_M.gguf
+ollama create marika-v2.1 -f Modelfile
+ollama run marika-v2.1
+```
+
+Standalone, the model speaks OpenAI-style tool calls and terse operator English, so it works in any harness that sends tool schemas over an OpenAI-compatible API. It was trained against Erdtree's 55 tool schemas, and it is most accurate with them. Inside Erdtree it also gets the live system snapshot, the permission gate and the audit log.
 
 ---
 
@@ -47,10 +81,27 @@ The models ship baked into the distro, co-designed with the system context layer
 
 | Tier | Name | Model | Target |
 |------|------|-------|--------|
-| 1 | **Linux Marika** | ~3B quantized (current: `marika-v2.1`, Qwen2.5-7B SFT, [downloads](https://github.com/aaronblatnoy/erdtree/releases)) | Hobbyists, homelabbers |
-| 2 | **Linux Radagon** | 7B-14B specialized | Professional sysadmins, data centers |
+| 1 | **Linux Marika** | `marika-v2.1`, 7B, about 4.7 GB quantized, runs on one 8 GB GPU | Hobbyists, homelabbers |
+| 2 | **Linux Radagon** | 30B mixture of experts, about 18 GB quantized | Professional sysadmins, data centers |
 
 *More robust, enterprise-grade distros to come.*
+
+---
+
+## Try It
+
+The sandbox is a throwaway Rocky 9 container. Destructive operations hit a disposable overlay, never the host. It needs podman and a local [Ollama](https://ollama.com) with the model created as above.
+
+```bash
+sandbox/build.sh          # once
+sandbox/run.sh marika     # marika-v2.1
+sandbox/run.sh marika base            # untuned baseline, for comparison
+sandbox/run.sh marika <ollama-model>  # any other served model
+```
+
+Type plain English. `!cmd` runs one bash command. `!!` toggles between natural-language mode and bash mode. The welcome screen shows which model build is loaded.
+
+The sandbox sees the host's real hardware, network, listening ports and containers, all read-only. Container access goes through a filter on the host that forwards only read requests, so nothing in the sandbox can start, stop or remove a host container. Details are in [sandbox/README.md](sandbox/README.md).
 
 ---
 
@@ -58,14 +109,50 @@ The models ship baked into the distro, co-designed with the system context layer
 
 The agentic framework lives in `core/`. Built from the ground up to be model-native, invisible-AI, and auditable. The framework and the model are co-designed -- the system context layer informs how the model was trained, and the model's outputs are structured to feed directly back into the framework.
 
-**System Context Layer** -- On startup and continuously, the agent builds and maintains a live model of the running system: kernel version, installed packages, running services, hardware topology, recent logs, open ports, firewall rules, disk health. This context is injected automatically into every query. The user never has to explain their environment. The model was trained with this context structure in mind.
+**System Context Layer** -- On startup and continuously, the agent builds and maintains a live model of the running system: kernel version, installed packages, running services, hardware topology, recent logs, open ports, firewall rules, disk health. This context is injected automatically into every query. The user never has to explain their environment.
 
-**Permission Model:**
+**Tools** -- 55 tools in `core/tools/`, from services, packages, disk and network to SELinux, LVM, podman, nginx, PostgreSQL and SSSD. Each tool exposes named operations, and every operation is tagged read, write or destructive in code.
+
+**Permission Model** -- enforced by deterministic code in `core/agent/permissions.py`, never by the model:
 - Read operations → execute immediately
 - Write/config operations → confirm before executing
 - Destructive/privileged operations → explicit confirmation required, always logged
 
+The model is not trained to ask permission and cannot skip the gate. When the tool's declared class and the command classifier disagree, the stricter one wins. A test sweeps every non-read operation in the registry against the gate.
+
+**Runtime guards that do not depend on the model:**
+- Tool selection: about 11 of the 55 tool schemas are advertised per request, chosen by a keyword scorer. This cut the prompt from about 14k tokens to about 4k.
+- History gate: earlier turns are sent only when the request refers back to them.
+- No-call guard: a reply that reads like command output is never shown when no operation actually ran.
+- Re-ask: a malformed or unknown tool call is corrected once, and correction text never reaches the screen.
+
 **Audit Trail** -- Every operation is logged: timestamp, natural language input, translated command, output, result. Non-negotiable.
+
+---
+
+## Repository Layout
+
+| Path | Contents |
+|------|----------|
+| `core/agent/` | The loop: router, permission gate, tool selection, history gate, no-call guard, audit |
+| `core/tools/` | The 55 system tools |
+| `shell/` | The login shell with natural-language and bash modes |
+| `rag/`, `runtime/` | Offline document index built from the machine's man pages and admin docs, plus session memory |
+| `finetune/` | Training-data pipeline, simulators, held-out eval pools, `eval.py` |
+| `finetune/train/` | Training and export scripts, Modelfiles, the rented-GPU spend guard |
+| `sandbox/` | The container sandbox |
+| `os/` | Distribution and ISO build work |
+| `docs/` | [MODELS.md](docs/MODELS.md), output spec, corpus build notes, decision records |
+| `tests/` | About 7,100 tests |
+
+### Evaluate a model
+
+```bash
+python -m finetune.eval finetune/data/eval.jsonl --model marika-v2.1   # first requests
+python -m finetune.eval - --multiturn --model marika-v2.1              # follow-ups
+```
+
+Rebuilding the corpus and training are covered in [docs/MODELS.md](docs/MODELS.md) and [finetune/train/TRAINING.md](finetune/train/TRAINING.md).
 
 ---
 
@@ -87,19 +174,17 @@ A purpose-trained model running natively inside an OS is a new paradigm for huma
 
 ## Status
 
-Active buildout — the agent loop runs end to end on local models today. Not production-ready.
+Active buildout. The agent loop runs end to end on local models today. Not production-ready.
 
 **Working now:**
-- The full agent loop: English in -> tool call -> permission gate -> execute -> audited -> streamed English out, running on local Qwen (3B/7B/14B) via Ollama.
-- The product shell: a login shell with a natural-language mode and a raw-bash mode you toggle between, live token streaming, inline tool steps, and a dead-man fallback that drops you to bash if the engine is unavailable (you're never stuck).
-- Ten system tools (services, packages, logs, network, firewall, users, disk, processes, hardware, files), a hardened permission gate (reads run free, writes confirm, destructive ops need a typed word), and an append-only audit log.
-- Local document retrieval grounded in a real on-box corpus: an offline orchestrator turns the machine's own man pages and Rocky admin docs into a single durable index, so "how do I open a firewall port" returns the actual `firewall-cmd` passage from the docs — built and queried entirely on the box, no network. Paired with an invisible-memory layer (rolling compaction + episodic recall) so sessions never hit a context wall.
-- A throwaway Rocky 9 container sandbox for testing the Marika (3B) and Radagon (7B-14B) tiers, with a seeded playground and real hardware telemetry (GPU / CPU / sensors / fans).
-- The fine-tuning pipeline, end to end: `finetune/` builds ShareGPT traces from the live tool registry (corpus v3: 6,543 records; answers are derived from the simulated tool output; 655 multi-turn follow-up records and 180 contrastive records), `finetune/train/` trains and exports, and `finetune/eval.py` scores any served model on two held-out pools that are never trained on: 100 first requests and 80 follow-ups. Current results, right tool and operation: `marika-v2.1` 94 first-request / 88 follow-up; untuned Qwen2.5-7B 72 / 81; `radagon-ft` (Qwen3-30B-A3B MoE, attention-only LoRA on the older single-turn corpus) 84 / 5 and due for a rerun on corpus v3. Weights for every model are under [Releases](https://github.com/aaronblatnoy/erdtree/releases); the full training and evaluation record is in [docs/MODELS.md](docs/MODELS.md).
-- Runtime guards that do not depend on the model: a deterministic permission gate with a full-registry sweep test, per-request tool selection (about 11 of 55 tools advertised per turn), a history gate (earlier turns are sent only when the request refers back), and a no-call guard that refuses to display a result when no operation was actually run.
-- ~1,900 tests green.
+- The full loop: English in, tool call, permission gate, execute, audit, streamed English out, on local models through Ollama.
+- The product shell: natural-language and raw-bash modes, live streaming, inline tool steps, and a fallback that drops you to bash if the engine is unavailable.
+- 55 system tools, the deterministic permission gate, and an append-only audit log.
+- Local document retrieval over the machine's own man pages and Rocky admin docs, built and queried on the box with no network, plus rolling compaction and episodic recall so sessions never hit a context wall.
+- The fine-tuning pipeline end to end: corpus v3 (6,543 records, answers derived from simulated tool output, 655 multi-turn and 180 contrastive records), training, export to GGUF, and held-out evaluation.
+- `marika-v2.1` published and set as the sandbox default. `radagon-v3` trained.
 
-**Still ahead:** per-tier configuration plumbing, Radagon retrained on corpus v3 with expert-layer LoRA, how the reference corpus ships (bundled in the image vs. built on first boot), and the bootable ISO installer.
+**Still ahead:** evaluating and publishing `radagon-v3`, per-tier configuration plumbing, how the reference corpus ships (bundled in the image or built on first boot), and the bootable ISO installer.
 
 ---
 
