@@ -645,7 +645,9 @@ def _clip(text: str, limit: int) -> str:
 # is malformed — used to route a failed attempt to a re-ask instead of printing
 # it. Deliberately narrow so ordinary prose answers never match.
 _TOOLCALL_TAG = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
-_FUNC_PREFIX = re.compile(r"^\s*[A-Za-z_][\w]*(?:\.[\w]+)*\s*[(\[{]")
+# `name(` / `name[` with NO space, or `name {`.  A space before "(" is ordinary
+# English ("Failed (exit 1): ...") and must never be treated as a call attempt.
+_FUNC_PREFIX = re.compile(r"^\s*[A-Za-z_][\w]*(?:\.[\w]+)*(?:[(\[]|\s*\{)")
 _NAME_THEN_JSON = re.compile(r"^\s*([A-Za-z_][\w]*(?:\.[\w]+)*)\s*\(?\s*(\{.*\})\s*\)?\s*$", re.DOTALL)
 
 

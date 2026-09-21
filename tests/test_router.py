@@ -412,3 +412,9 @@ def test_is_valid_action_predicate_frozen(router):
         {"id": "c2", "name": "frobnicate", "arguments": _args({"operation": "x"})}
     ])
     assert res_miss.is_valid_action is False
+
+
+def test_failure_report_is_english_not_a_call_attempt():
+    from core.agent.router import _extract_tool_call_from_content
+    assert _extract_tool_call_from_content("Failed (exit 1): unit not found.") == (None, False)
+    assert _extract_tool_call_from_content("services({bad json")[1] is True

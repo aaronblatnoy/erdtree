@@ -215,6 +215,32 @@ def _op_summary(args: dict[str, Any]) -> ToolResult:
 # Dispatch table
 def _op_memory_modules(args: dict[str, Any]) -> ToolResult:
     """Installed RAM modules: size, type, speed, manufacturer, part number."""
+    # udev exports the firmware memory table without needing root.
+    udev = run_subprocess(["udevadm", "info", "-p", "/sys/devices/virtual/dmi/id"])
+    if udev.ok and "MEMORY_DEVICE_" in udev.stdout:
+        slots: dict[str, dict[str, str]] = {}
+        for line in udev.stdout.splitlines():
+            if "MEMORY_DEVICE_" not in line or "=" not in line:
+                continue
+            key, value = line.split("MEMORY_DEVICE_", 1)[1].split("=", 1)
+            idx, _, field = key.partition("_")
+            if idx.isdigit():
+                slots.setdefault(idx, {})[field] = value.strip()
+        rows = []
+        for idx in sorted(slots, key=int):
+            d = slots[idx]
+            size = d.get("SIZE", "")
+            if not size.isdigit() or int(size) == 0:
+                continue
+            rows.append(
+                f"{d.get('LOCATOR', 'slot ' + idx)}: {int(size) // 2**30} GB {d.get('TYPE', '')} "
+                f"{d.get('FORM_FACTOR', '')}, rated {d.get('SPEED_MTS', '?')} MT/s, running "
+                f"{d.get('CONFIGURED_SPEED_MTS', '?')} MT/s, maker {d.get('MANUFACTURER', 'Unknown')}, "
+                f"part {d.get('PART_NUMBER', 'Unknown')}, rank {d.get('RANK', '?')}"
+            )
+        if rows:
+            return ToolResult(exit_code=0, stdout="\n".join(rows) + "\n", stderr="",
+                              summary=f"{len(rows)} memory module(s) installed of {len(slots)} slot(s).")
     result = run_subprocess(["dmidecode", "--type", "memory"])
     if result.ok and "Memory Device" in result.stdout:
         keep = ("Memory Device", "Size:", "Type:", "Speed:", "Manufacturer:", "Part Number:", "Locator:",
@@ -228,7 +254,7 @@ def _op_memory_modules(args: dict[str, Any]) -> ToolResult:
     detail = (result.stderr or "").strip().splitlines()[0] if (result.stderr or "").strip() else ""
     return ToolResult(exit_code=result.exit_code or 1, stdout="", stderr=result.stderr,
                       summary=("Memory module details need firmware (DMI) table access, which is not available "
-                               "here" + (f": {detail}" if detail else ".") + _maybe_selinux_hint(result.stderr)))
+                               "here" + (f": {detail}" if detail else ".")))
 
 
 def _op_gpu(args: dict[str, Any]) -> ToolResult:
