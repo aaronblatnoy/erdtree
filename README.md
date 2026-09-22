@@ -48,14 +48,16 @@ The model's job is narrow on purpose. It receives the request, a live snapshot o
 | `marika-v2.1` | Linux Marika | Qwen2.5-7B-Instruct | corpus v3, 6,543 traces | current |
 | `radagon-v3` | Linux Radagon | Qwen3-30B-A3B-Instruct-2507 (mixture of experts, about 3B parameters active per token) | corpus v3, LoRA on attention and expert layers | current |
 
-Held-out results, percent of requests where the model chose the right tool and operation. Neither pool is ever trained on.
+Held-out results. Neither pool is ever trained on. Each cell is the percent of requests with the right tool and operation, then the percent with every required argument correct. "Raw" scores against the single reference answer per item. "Adjudicated" also accepts documented second correct answers and stops penalizing free-text or unstated arguments; every adjudication and its reason is in `finetune/scenarios/eval_adjudication.py`.
 
-| Model | First request (100) | Follow-up (80) |
-|-------|---------------------|----------------|
-| `marika-v2.1` | 94 | 88 |
-| `radagon-v3` | 96 | 88 |
-| untuned Qwen2.5-7B, for reference | 72 | 81 |
-| untuned Qwen3-30B-A3B, for reference | 69 | not run |
+| Model | First request (100), raw | First request, adjudicated | Follow-up (80), raw | Follow-up, adjudicated |
+|-------|------|------|------|------|
+| `radagon-v3` | 96 / 85 | 99 / 95 | 88 / 81 | 94 / 86 |
+| `marika-v2.1` | 93 / 83 | 97 / 93 | 85 / 78 | 88 / 79 |
+| untuned Qwen2.5-7B, for reference | 72 / 61 | | 81 / 71 | |
+| untuned Qwen3-30B-A3B, for reference | 69 / 63 | | not run | |
+
+Scores move by 2 to 3 points between runs of the same model, so only larger gaps mean anything. Radagon has reached the ceiling of the first-request pool; follow-up arguments are the weakest area for both models.
 
 ### Superseded models
 
@@ -67,7 +69,7 @@ Kept for the record. Their weights remain under Releases, but none of them shoul
 | `marika-v2` | Qwen2.5-7B-Instruct | corpus v2 | 92 | 4 |
 | `marika-ft` | Qwen2.5-3B-Instruct | corpus v1 | 64 | 74 |
 
-The follow-up scores of 4 and 5 came from training only on single-request records: the model learned to write a plausible result instead of calling a tool. Corpus v3 adds multi-turn records and fixes it. The full method, results and lessons are in [docs/MODELS.md](docs/MODELS.md).
+The superseded models' follow-up scores of 4 and 5 came from training only on single-request records: the model learned to write a plausible result instead of calling a tool. Corpus v3 adds multi-turn records and fixes it. The full method, results and lessons are in [docs/MODELS.md](docs/MODELS.md).
 
 ### Download and run a model on its own
 

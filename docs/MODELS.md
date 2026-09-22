@@ -49,10 +49,12 @@ re-ask round when a call fails schema validation. Checks, as a percentage of rec
 
 ## Results
 
+Adjudicated figures come from a 2026-09-21 rerun scored with `finetune/scenarios/eval_adjudication.py`: documented second correct answers count, free-text arguments count when non-empty, and arguments whose value the request never states are skipped. Raw figures are unchanged. Same-model reruns differ by 2 to 3 points.
+
 | Model | First request: tool + operation | accepted | required args | Follow-up: called | tool + operation | required args |
 |-------|------|------|------|------|------|------|
-| `marika-v2.1` | **94** | **96** | **84** | **100** | **88** | **80** |
-| `radagon-v3` | **96** | **99** | **85** | **100** | **88** | **81** |
+| `marika-v2.1` | 94 (97 adjudicated) | 96 | 84 (93 adjudicated) | 100 | 88 (88 adjudicated) | 80 (79 adjudicated) |
+| `radagon-v3` | **96** (99 adjudicated) | **99** | **85** (95 adjudicated) | **100** | **88** (94 adjudicated) | **81** (86 adjudicated) |
 | `marika-v2` | 92 | 91 | 78 | 4 | 4 | 4 |
 | `marika-ft` | 64 | 65 | 51 | 89 | 74 | 63 |
 | `radagon-ft` | 84 | 83 | 71 | 5 | 5 | 5 |
