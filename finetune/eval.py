@@ -225,6 +225,77 @@ def score_multiturn(model: str, scn, num_ctx: int, tier: str = "radagon") -> dic
     return out
 
 
+def score_multistep(model: str, scn, num_ctx: int, tier: str = "radagon") -> dict:
+    """Held-out MULTI-STEP scoring.  One request needs a sequence of calls.  Each
+    step is teacher-forced: the reference calls so far and their simulated
+    results are in the history, exactly as the runtime records them, and the
+    model is asked for the next call.  After the final step the model must
+    answer in English (stop) rather than call again.
+
+    Per scenario: step_k correct (tool+op) for every k, args_req per step,
+    first (step 1), all_steps, stop, complete (= all_steps and stop)."""
+    from finetune.assemble import _stable_seed
+    from finetune.context import make_context
+    from finetune.simulate import simulate
+    from finetune.generate import TIER_PROMPTS
+    from finetune.scenarios import eval_adjudication as adj
+
+    snapshot = make_context(tier, _stable_seed(scn.id))
+    used: list[str] = []
+    msgs = None
+    steps = list(scn.steps)
+    out = {"id": scn.id, "pc": scn.kind, "n_steps": len(steps), "advertised": True, "i2": True,
+           "steps": [], "step_ok": 0, "args_req_ok": 0, "adj_args_req_ok": 0,
+           "first": False, "all_steps": False, "stop": False, "complete": False, "extra_call": None}
+    for k, st in enumerate(steps):
+        names = _SELECTOR.select(scn.user_input, extra=used)
+        tools = build_tool_list(coreimports.registry_schemas(coreimports.registry, names))
+        if msgs is None:
+            cfg = coreimports.PromptConfig(tier_prompt=TIER_PROMPTS[tier], snapshot_text=snapshot,
+                                           user_input=scn.user_input, tools=tools, tool_choice="auto")
+            msgs = [{"role": "system", "content": coreimports.assemble_messages(cfg)[0]["content"]},
+                    {"role": "user", "content": scn.user_input}]
+        if st.tool not in names:
+            out["advertised"] = False
+        m = chat(model, msgs, tools, num_ctx)
+        out["i2"] = out["i2"] and i2_ok(m.get("content", ""))
+        name, args = _parse_call(m)
+        rec = {"k": k + 1, "ref": f"{st.tool}.{st.operation}", "chosen": None, "op": False, "args_req": False}
+        if name is not None:
+            j = _judge(name, args, st.tool, dict(st.args), scn.id)
+            rec.update({"chosen": f"{name}.{args.get('operation')}", "op": j["op"], "args_req": j["args_req"],
+                        "adj_args_req": j["adj_args_req"], "got_args": args})
+            out["step_ok"] += int(j["op"]); out["args_req_ok"] += int(j["args_req"])
+            out["adj_args_req_ok"] += int(j["adj_args_req"])
+        out["steps"].append(rec)
+        if k == 0:
+            out["first"] = rec["op"]
+        # Teacher-force the reference step and its simulated result.
+        spec = coreimports.registry.get(st.tool)
+        op, rest = coreimports.validate_arguments(spec, dict(st.args))
+        res = simulate(st.tool, op, rest, snapshot)
+        payload = {"exit_code": res.get("exit_code", 0), "stdout_summary": (res.get("stdout") or "")[:512],
+                   "stderr_summary": (res.get("stderr") or "")[:512], "summary": res.get("summary", "")}
+        cid = f"call_s{k + 1}"
+        msgs.append({"role": "assistant", "content": "", "tool_calls": [{"id": cid, "type": "function",
+                     "function": {"name": st.tool, "arguments": dict(st.args)}}]})
+        msgs.append({"role": "tool", "tool_call_id": cid, "content": json.dumps(payload)})
+        if st.tool not in used:
+            used.append(st.tool)
+    out["all_steps"] = out["step_ok"] == len(steps)
+    # Stop check: after the last result the right move is an English answer.
+    names = _SELECTOR.select(scn.user_input, extra=used)
+    tools = build_tool_list(coreimports.registry_schemas(coreimports.registry, names))
+    m = chat(model, msgs, tools, num_ctx)
+    out["i2"] = out["i2"] and i2_ok(m.get("content", ""))
+    name, args = _parse_call(m)
+    out["stop"] = name is None and bool((m.get("content") or "").strip())
+    if name is not None:
+        out["extra_call"] = f"{name}.{args.get('operation')}"
+    out["complete"] = out["all_steps"] and out["stop"]
+    return out
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser()
     p.add_argument("path"); p.add_argument("--model", action="append", required=True)
@@ -232,10 +303,15 @@ def main(argv=None) -> int:
     p.add_argument("--out", default="finetune/data/eval_results.jsonl")
     p.add_argument("--multiturn", action="store_true",
                    help="Score the held-out follow-up pool (finetune/scenarios/eval_pool_multiturn.py); PATH is ignored.")
+    p.add_argument("--multistep", action="store_true",
+                   help="Score the held-out multi-step pool (finetune/scenarios/eval_pool_multistep.py); PATH is ignored.")
     a = p.parse_args(argv)
     if a.multiturn:
         from finetune.scenarios.eval_pool_multiturn import EVAL_MULTITURN
         recs = list(EVAL_MULTITURN)
+    elif a.multistep:
+        from finetune.scenarios.eval_pool_multistep import EVAL_MULTISTEP
+        recs = list(EVAL_MULTISTEP)
     else:
         recs = [json.loads(l) for l in open(a.path)]
     if a.limit: recs = recs[:a.limit]
@@ -245,14 +321,34 @@ def main(argv=None) -> int:
             rows, t0 = [], time.time()
             for i, rec in enumerate(recs, 1):
                 try:
-                    r = score_multiturn(model, rec, a.num_ctx) if a.multiturn else score_one(model, rec, a.num_ctx)
+                    if a.multiturn: r = score_multiturn(model, rec, a.num_ctx)
+                    elif a.multistep: r = score_multistep(model, rec, a.num_ctx)
+                    else: r = score_one(model, rec, a.num_ctx)
                 except Exception as exc:
-                    _id = rec.id if a.multiturn else rec["meta"]["scenario_id"]
-                    r = {"id": _id, "pc": "followup" if a.multiturn else rec["meta"]["permission_class"], "error": str(exc)[:200]}
+                    _id = rec["meta"]["scenario_id"] if isinstance(rec, dict) else rec.id
+                    _pc = rec["meta"]["permission_class"] if isinstance(rec, dict) else getattr(rec, "kind", "followup")
+                    r = {"id": _id, "pc": _pc, "error": str(exc)[:200]}
                 r["model"] = model; rows.append(r); fh.write(json.dumps(r) + "\n"); fh.flush()
-                print(f"[{model}] {i}/{len(recs)} {r['id']} adv={r.get('advertised')} op={r.get('op')} valid={r.get('valid')} op2={r.get('op2')} {r.get('chosen')}", file=sys.stderr)
+                if a.multistep:
+                    print(f"[{model}] {i}/{len(recs)} {r['id']} steps={r.get('step_ok')}/{r.get('n_steps')} stop={r.get('stop')} extra={r.get('extra_call')} "
+                          + " ".join(f"{x['ref']}->{x['chosen']}" for x in r.get('steps', [])), file=sys.stderr)
+                else:
+                    print(f"[{model}] {i}/{len(recs)} {r['id']} adv={r.get('advertised')} op={r.get('op')} valid={r.get('valid')} op2={r.get('op2')} {r.get('chosen')}", file=sys.stderr)
             n = len(rows)
             def rate(k): return sum(bool(r.get(k)) for r in rows) / n
+            if a.multistep:
+                total = sum(r.get("n_steps", 0) for r in rows) or 1
+                summary[model] = {
+                    "n": n, "advertised": rate("advertised"),
+                    "step_correct": sum(r.get("step_ok", 0) for r in rows) / total,
+                    "step_args_req": sum(r.get("args_req_ok", 0) for r in rows) / total,
+                    "step_adj_args_req": sum(r.get("adj_args_req_ok", 0) for r in rows) / total,
+                    "first_step": rate("first"), "all_steps": rate("all_steps"), "stop": rate("stop"),
+                    "complete": rate("complete"), "i2_clean": rate("i2"),
+                    "errors": sum("error" in r for r in rows), "sec_per_record": (time.time() - t0) / n,
+                }
+                print(json.dumps({model: summary[model]}), file=sys.stderr)
+                continue
             summary[model] = {
                 "n": n, "advertised": rate("advertised"), "called": rate("called"), "tool": rate("tool"),
                 "op": rate("op"), "valid": rate("valid"), "args_req": rate("args_req"), "args_exact": rate("args"),
