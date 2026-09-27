@@ -142,11 +142,21 @@ if SMOKE:
     records = records[:32]
 ds = Dataset.from_list(records)
 
+# INIT_ADAPTER=<peft dir>: continue training an existing adapter (e.g. marika-v2.1)
+# instead of starting a fresh LoRA.  The trainer then receives a PeftModel and no
+# peft_config.
+INIT_ADAPTER = os.environ.get("INIT_ADAPTER")
+if INIT_ADAPTER:
+    from peft import PeftModel
+    model = PeftModel.from_pretrained(model, os.path.expanduser(INIT_ADAPTER), is_trainable=True)
+    print("continuing from adapter", INIT_ADAPTER, "trainable params:",
+          sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6, "M", flush=True)
+
 trainer = MaskedLMTrainer(
     model=model,
     processing_class=tokenizer,
     train_dataset=ds,
-    peft_config=peft_config,
+    peft_config=None if INIT_ADAPTER else peft_config,
     args=SFTConfig(
         dataset_text_field="text",
         max_length=MAX_SEQ,
@@ -154,7 +164,7 @@ trainer = MaskedLMTrainer(
         gradient_accumulation_steps=int(os.environ.get("GRAD_ACCUM", 8)),      # x2 GPUs = global batch 16
         num_train_epochs=int(os.environ.get("EPOCHS", 2)),  # 2 on black-sky: ~18 s/sample measured, 3 epochs would be ~4 days
         max_steps=10 if SMOKE else -1,
-        learning_rate=1e-4,
+        learning_rate=float(os.environ.get("LR", 1e-4)),
         lr_scheduler_type="cosine",
         warmup_steps=int(os.environ.get("WARMUP_STEPS", 20)),
         logging_steps=1 if SMOKE else 5,
