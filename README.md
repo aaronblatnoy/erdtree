@@ -45,19 +45,19 @@ The model's job is narrow on purpose. It receives the request, a live snapshot o
 
 | Model | Tier | Base | Trained on | Status |
 |-------|------|------|------------|--------|
-| `marika-v2.1` | Linux Marika | Qwen2.5-7B-Instruct | corpus v3, 6,543 traces | current |
+| `marika-v4` | Linux Marika | Qwen2.5-7B-Instruct | corpus v4: corpus v3 plus 378 multi-step records | current |
 | `radagon-v3` | Linux Radagon | Qwen3-30B-A3B-Instruct-2507 (mixture of experts, about 3B parameters active per token) | corpus v3, LoRA on attention and expert layers | current |
 
-Held-out results. Neither pool is ever trained on. Each cell is the percent of requests with the right tool and operation, then the percent with every required argument correct. "Raw" scores against the single reference answer per item. "Adjudicated" also accepts documented second correct answers and stops penalizing free-text or unstated arguments; every adjudication and its reason is in `finetune/scenarios/eval_adjudication.py`.
+Held-out results. No pool is ever trained on. Cells are percent with the right tool and operation, then percent with every required argument correct, adjudicated (documented second correct answers count; free-text and unstated arguments are not penalized; every adjudication and its reason is in `finetune/scenarios/eval_adjudication.py`). Raw scores against the single reference answer are in [docs/MODELS.md](docs/MODELS.md).
 
-| Model | First request (100), raw | First request, adjudicated | Follow-up (80), raw | Follow-up, adjudicated |
+| Model | First request (100) | Follow-up (80) | Multi-step (50): steps correct | Multi-step: whole sequence completed |
 |-------|------|------|------|------|
-| `radagon-v3` | 96 / 85 | 99 / 95 | 88 / 81 | 94 / 86 |
-| `marika-v2.1` | 93 / 83 | 97 / 93 | 85 / 78 | 88 / 79 |
-| untuned Qwen2.5-7B, for reference | 72 / 61 | | 81 / 71 | |
-| untuned Qwen3-30B-A3B, for reference | 69 / 63 | | not run | |
+| `marika-v4` | 97 / 96 | 90 / 83 | 74 | 54 |
+| `radagon-v3` | 99 / 95 | 94 / 86 | 34 | 0 |
+| `marika-v2.1` | 97 / 93 | 88 / 79 | 25 | 0 |
+| untuned Qwen2.5-7B, for reference | 72 / 61 | 81 / 71 | | |
 
-Scores move by 2 to 3 points between runs of the same model, so only larger gaps mean anything. Radagon has reached the ceiling of the first-request pool; follow-up arguments are the weakest area for both models.
+The multi-step pool is one request that needs 2 to 5 calls in sequence, for example "why is nginx not starting" or "restart crond and make sure it came back". Models trained only on single calls make one call and answer; corpus v4 fixes that for Marika. Radagon is due the same retrain. Scores move by 2 to 3 points between runs of the same model.
 
 ### Superseded models
 
@@ -66,6 +66,7 @@ Kept for the record. Their weights remain under Releases, but none of them shoul
 | Model | Base | Trained on | First request | Follow-up |
 |-------|------|------------|---------------|-----------|
 | `radagon-ft` | Qwen3-30B-A3B-Instruct-2507 | corpus v2, attention-only LoRA | 84 | 5 |
+| `marika-v2.1` | Qwen2.5-7B-Instruct | corpus v3 | 94 | 88 |
 | `marika-v2` | Qwen2.5-7B-Instruct | corpus v2 | 92 | 4 |
 | `marika-ft` | Qwen2.5-3B-Instruct | corpus v1 | 64 | 74 |
 
@@ -89,7 +90,7 @@ Standalone, the model speaks OpenAI-style tool calls and terse operator English,
 
 | Tier | Name | Model | Target |
 |------|------|-------|--------|
-| 1 | **Linux Marika** | `marika-v2.1`, 7B, about 4.7 GB quantized, runs on one 8 GB GPU | Hobbyists, homelabbers |
+| 1 | **Linux Marika** | `marika-v4`, 7B, about 4.7 GB quantized, runs on one 8 GB GPU | Hobbyists, homelabbers |
 | 2 | **Linux Radagon** | 30B mixture of experts, about 18 GB quantized | Professional sysadmins, data centers |
 
 *More robust, enterprise-grade distros to come.*
@@ -102,7 +103,7 @@ The sandbox is a throwaway Rocky 9 container. Destructive operations hit a dispo
 
 ```bash
 sandbox/build.sh          # once
-sandbox/run.sh marika     # marika-v2.1
+sandbox/run.sh marika     # marika-v4
 sandbox/run.sh marika base            # untuned baseline, for comparison
 sandbox/run.sh marika <ollama-model>  # any other served model
 ```
@@ -190,9 +191,9 @@ Active buildout. The agent loop runs end to end on local models today. Not produ
 - 55 system tools, the deterministic permission gate, and an append-only audit log.
 - Local document retrieval over the machine's own man pages and Rocky admin docs, built and queried on the box with no network, plus rolling compaction and episodic recall so sessions never hit a context wall.
 - The fine-tuning pipeline end to end: corpus v3 (6,543 records, answers derived from simulated tool output, 655 multi-turn and 180 contrastive records), training, export to GGUF, and held-out evaluation.
-- `marika-v2.1` and `radagon-v3` trained, evaluated and published. `marika-v2.1` is the sandbox default.
+- `marika-v4` and `radagon-v3` trained, evaluated and published. `marika-v4` is the sandbox default.
 
-**Still ahead:** per-tier configuration plumbing, how the reference corpus ships (bundled in the image or built on first boot), and the bootable ISO installer.
+**Still ahead:** Radagon retrained on corpus v4 (multi-step), per-tier configuration plumbing, how the reference corpus ships (bundled in the image or built on first boot), and the bootable ISO installer.
 
 ---
 

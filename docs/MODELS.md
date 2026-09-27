@@ -1,6 +1,6 @@
 # Erdtree models: training and evaluation record
 
-Last updated 2026-09-21. Weights for every model listed here are published under
+Last updated 2026-09-27. Weights for every model listed here are published under
 [Releases](https://github.com/aaronblatnoy/erdtree/releases).
 
 ## What the models do
@@ -18,7 +18,8 @@ output. The model never runs anything itself.
 |------|------|--------|---------------|--------|
 | `marika-ft` | Qwen2.5-3B-Instruct | QLoRA, 1 epoch, loss on all tokens | corpus v1, 2,721 single-turn traces | superseded |
 | `marika-v2` | Qwen2.5-7B-Instruct | NF4 QLoRA, 2 epochs, assistant-token loss | corpus v2, 5,742 single-turn traces | superseded (follow-up defect, see below) |
-| `marika-v2.1` | Qwen2.5-7B-Instruct | NF4 QLoRA, 2 epochs, assistant-token loss | corpus v3, 6,543 traces | **current Marika tier** |
+| `marika-v2.1` | Qwen2.5-7B-Instruct | NF4 QLoRA, 2 epochs, assistant-token loss | corpus v3, 6,543 traces | superseded (single call then answer) |
+| `marika-v4` | Qwen2.5-7B-Instruct | continued from the v2.1 adapter, NF4 QLoRA, 2 epochs, lr 5e-5, on black-sky (6.7 h) | corpus v4 sample: 378 multi-step + 981 v3 records | **current Marika tier** |
 | `radagon-v3` | Qwen3-30B-A3B-Instruct-2507 (mixture of experts, about 3B active) | bf16 LoRA r=16 on attention projections and the fused expert tensors (PEFT `target_parameters`), 2 epochs, 818 steps, final train loss 0.038 | corpus v3, 6,543 traces | **current Radagon tier** |
 | `radagon-ft` | same 30B base | bf16 LoRA on attention projections only, 2 epochs | corpus v2 | superseded (follow-up defect) |
 
@@ -49,11 +50,14 @@ re-ask round when a call fails schema validation. Checks, as a percentage of rec
 
 ## Results
 
+Multi-step pool (`finetune/scenarios/eval_pool_multistep.py`, 50 scenarios of 2 to 5 calls, scored with `--multistep`): steps correct / whole sequence completed / stops when done. marika-v4 74 / 54 / 90; radagon-v3 34 / 0 / 96; marika-v2.1 25 / 0 / 98. Before v4, every later step was answered in English instead of called.
+
 Adjudicated figures come from a 2026-09-21 rerun scored with `finetune/scenarios/eval_adjudication.py`: documented second correct answers count, free-text arguments count when non-empty, and arguments whose value the request never states are skipped. Raw figures are unchanged. Same-model reruns differ by 2 to 3 points.
 
 | Model | First request: tool + operation | accepted | required args | Follow-up: called | tool + operation | required args |
 |-------|------|------|------|------|------|------|
 | `marika-v2.1` | 94 (97 adjudicated) | 96 | 84 (93 adjudicated) | 100 | 88 (88 adjudicated) | 80 (79 adjudicated) |
+| `marika-v4` | 94 (97 adjudicated) | 97 | 85 (96 adjudicated) | 100 | 86 (90 adjudicated) | 79 (83 adjudicated) |
 | `radagon-v3` | **96** (99 adjudicated) | **99** | **85** (95 adjudicated) | **100** | **88** (94 adjudicated) | **81** (86 adjudicated) |
 | `marika-v2` | 92 | 91 | 78 | 4 | 4 | 4 |
 | `marika-ft` | 64 | 65 | 51 | 89 | 74 | 63 |
